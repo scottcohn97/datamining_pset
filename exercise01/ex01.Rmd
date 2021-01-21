@@ -1,0 +1,189 @@
+---
+title: "ECO395M: Data Mining --- Exercise 01"
+subtitle: "ECO395M: Data Mining"
+author: "Scott Cohn"
+date: "`r Sys.Date()`"
+output:
+  tufte::tufte_handout:
+    citation_package: natbib
+    latex_engine: xelatex
+  tufte::tufte_html: default
+  tufte::tufte_book:
+    citation_package: natbib
+    latex_engine: xelatex
+bibliography: skeleton.bib
+link-citations: yes
+---
+
+```{r setup, include=FALSE}
+library(tufte)
+library(tidyverse)
+library(lubridate)
+library(patchwork)
+library(Hmisc)
+library(kableExtra)
+library(extrafont)
+library(ggthemes)
+library(ggmap)
+library(tidygeocoder)
+
+# invalidate cache when the tufte version changes
+knitr::opts_chunk$set(tidy = FALSE, 
+                      cache.extra = packageVersion('tufte')
+                      )
+options(
+  htmltools.dir.version = FALSE, 
+  scipen = 999 # turn of scientific notation
+        )
+```
+
+# Data visualization: Gas Prices
+
+```{r gasprices, message=TRUE, warning=FALSE, cache=TRUE, include=FALSE}
+gasprices <- read_csv("../../ECO395M/data/GasPrices.csv")
+
+# geocode the addresses
+gasprices <- gasprices %>% 
+  tidygeocoder::geocode(street = Address,
+          city = 'Austin',
+          state = 'TX',
+          postalcode = Zipcode,
+          method = 'cascade', 
+          lat = latitude , long = longitude)
+```
+
+First, we import the data and geocode the addresses. The gas stations in Austin, grouped by brand, appear in Figure 1.
+
+```{r gasmap, echo=FALSE, fig.cap="Map of Austin gas stations", fig.height=8, fig.pos='h', fig.width=8, message=FALSE, warning=FALSE, cache=TRUE}
+atx_map <- ggmap(get_map("austin", zoom = 13), 
+                 ylab = "Latitude", 
+                 xlab = "Longitude") 
+
+m2 <- atx_map + geom_point(data = gasprices, 
+                     mapping = aes(x = longitude, 
+                                   y = latitude, 
+                                   color = Brand)) + 
+  scale_color_brewer(palette = "Set1")
+
+m2 + labs(x = "Longitude",
+          y = "Latitude") + 
+  theme(text = element_text(family = "Palatino"))
+```
+
+## The Theories
+
+```{r thA, echo=FALSE, fig.cap="Price with competition", fig.height=3.33, fig.pos='h!', fig.width=5, cache=TRUE}
+# boxplot
+gasprices %>% 
+  ggplot( aes(x=Competitors, y=Price, fill=Competitors)) + 
+    geom_boxplot() + 
+    scale_fill_brewer(type="qual") +
+    geom_jitter(color="black", size = 0.6, alpha = 0.9) + 
+    theme_minimal() + 
+    theme(text = element_text(family = "Palatino")) + 
+    labs(y = "Price") 
+```
+
+`r newthought("Theory A:")` Gas stations charge more if they lack direct competition in sight.
+
+
+`r newthought("Conclusion:")` The cheapest gas stations seem to charge similarly. Gas stations that have no competition have higher prices at the 50th and 75th percentile. There are several gas stations, again facing no competition, pricing 10 cents per gallon higher than all of the rest.
+
+```{r thB, echo=FALSE, fig.cap="Price with income", fig.height=4.6, fig.pos='h!', fig.width=6, cache=TRUE}
+# scatter plot
+gasprices %>% 
+  ggplot(aes(x=Income, y=Price, color=Brand)) + 
+  geom_jitter() + 
+  scale_x_continuous(breaks=seq(10000,130000,15000)) +
+  scale_color_brewer(palette="Set1") +
+  theme_tufte()
+```
+
+`r newthought("Theory B:")` The richer the area, the higher the gas price.
+
+
+`r newthought("Conclusion:")` There is a lot of variation within brand across the income spectrum. There does seem to be a trend that higher income areas do have higher prices per gallon at the gas station.
+
+```{r thC, echo=FALSE, fig.cap="Shell versus competition", fig.height=10, fig.pos='h!', fig.width=10, cache=TRUE}
+# Bar plot
+gasprices %>% 
+  ggplot( aes(x=Name, y=Price, fill=Brand) ) +
+  stat_summary(fun.data = mean_sdl, geom = "bar") +
+  stat_summary(fun.data = mean_cl_boot, geom = "errorbar", width = 0.3) +
+  labs(x="") +
+  coord_flip() +
+  scale_fill_brewer(palette = "Set1") +
+  theme_tufte()
+```
+
+`r newthought("Theory C:")` Shell charges more than other brands.
+
+
+`r newthought("Conclusion:")` Visually, the averages are very close; Shell seems to price similarly to other brands. Broken down by franchise, this trend continues. Other gas stations, like Costco, that price well below the mean are able to take advantage (I assume) of other factors.
+
+```{r thD, echo=FALSE, fig.cap="Price with stoplights", fig.fullwidth=TRUE, fig.height=4, fig.pos='h!', fig.width=9, cache=TRUE}
+# faceted histogram
+gasprices %>% 
+  ggplot( aes(x=Price, fill=Stoplight) ) + 
+  geom_histogram(position="identity", bins = 15) + 
+  facet_grid(. ~ Stoplight) + 
+  scale_fill_brewer(type="qual") +
+  labs(y="Count") + 
+  theme_tufte()
+```
+
+`r newthought("Theory D:")` Gas stations at stoplights charge more.
+
+
+`r newthought("Conclusion:")` The distribution of price not at a stoplight is right-skewed whereas the distribution of price at a stoplight appears to be more normally distributed (maybe even left-skewed). Limited data makes this a bit difficult to parse. They seem to be similarly centered around 1.8ish. It seems that gas stations as stoplights price a bit higher than their non-stoplight counterparts.
+
+```{r thE, echo=FALSE, fig.cap="Price with highway access", fig.fullwidth=TRUE, fig.height=3, fig.pos='h', fig.width=9.5, cache=TRUE}
+# any
+p1 <- gasprices %>% 
+  ggplot( aes(x=Price, fill=Highway)) + 
+    geom_density(alpha=0.6) + 
+    scale_fill_brewer(type="qual") +
+    theme_tufte() +
+    labs(y="Density")
+
+p2 <- gasprices %>% 
+  ggplot( aes(x=Highway, y=Price, fill=Highway)) + 
+    geom_boxplot() + 
+    scale_fill_brewer(type="qual") +
+    geom_jitter(color="black", size = 0.4, alpha = 0.9) + 
+    theme_tufte() + 
+    theme(legend.position = "none") +
+    labs(y="Price") 
+
+# patchwork
+(p2 | p1)
+```
+
+`r newthought("Theory E:")` Gas stations with direct highway access charge more.
+
+
+`r newthought("Conclusion:")` The distribution of prices without direct highway access is more left-skewed than the price distribution with direct access. This is clear to see in the density plot on the right, but also when comparing the medians in the boxplot on the left.
+
+# Data Visualization: A Bike Share Network
+
+```{r bikeshare, warning=FALSE, include=FALSE}
+bikeshare <- read_csv("../../ECO395M/data/bikeshare.csv")
+```
+
+# Data visualization: Flights at ABIA
+
+```{r flightsABIA, warning=FALSE, include=FALSE}
+abia <- read_csv("../../ECO395M/data/ABIA.csv")
+```
+
+# K-Nearest Neighbors
+
+```{r sclass, warning=FALSE, include=FALSE}
+sclass <- read_csv("../../ECO395M/data/sclass.csv")
+```
+
+
+```{r bib, include=FALSE}
+# create a bib file for the R packages used in this document
+knitr::write_bib(c('base', 'rmarkdown'), file = 'skeleton.bib')
+```
