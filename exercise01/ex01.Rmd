@@ -23,6 +23,7 @@ library(tufte)
 library(tidyverse)
 library(tidymodels)
 library(tidyquant)
+library(kknn)
 library(lubridate)
 library(scales)
 library(patchwork)
@@ -411,10 +412,146 @@ gr3 <- gr2 +
 # K-Nearest Neighbors
 
 ```{r sclass, warning=FALSE, include=FALSE}
-sclass <- read_csv("../../ECO395M/data/sclass.csv")
+sclass <- read_csv("../../ECO395M/data/sclass.csv") %>% 
+  filter(trim %in% c("350", "65 AMG"))
+
+# Filter data
+sclass350 <- sclass %>% filter(trim == "350")
+sclass65amg <- sclass %>% filter(trim == "65 AMG")
+
+# Table
+sclass %>% 
+  group_by(trim) %>% 
+  tally() %>% 
+  kbl(booktabs = TRUE,
+             format = "latex",
+             caption = "Count of Trim",
+             escape = FALSE
+             ) %>% 
+  kable_styling(latex_options = "hold_position")
+```
+
+```{r eval=FALSE, include=FALSE}
+sclass %>% 
+  ggplot() + 
+  geom_point(aes(x = mileage, y = price, color = trim))
+```
+
+```{r traintest, echo=TRUE}
+set.seed(350)
+
+# split into train/test
+sclass350_split <- initial_split(sclass350, prop = 0.6, strata = price)
+sclass350_train <- training(sclass350_split)
+sclass350_test <- testing(sclass350_split)
+
+sclass65amg_split <- initial_split(sclass65amg, prop = 0.6, strata = price)
+sclass65amg_train <- training(sclass65amg_split)
+sclass65amg_test <- testing(sclass65amg_split)
+```
+
+```{r modspec}
+# 350
+sclass350_recipe <- recipe(price ~ mileage, data = sclass350_train) %>%
+  step_scale(all_predictors()) %>%
+  step_center(all_predictors())
+
+sclass350_spec <- nearest_neighbor(weight_func = "rectangular", neighbors = tune()) %>%
+  set_engine("kknn") %>%
+  set_mode("regression")
+
+sclass350_vfold <- vfold_cv(sclass350_train, v = 2, strata = price)
+
+sclass350_wkflw <- workflow() %>%
+  add_recipe(sclass350_recipe) %>%
+  add_model(sclass350_spec)
+
+sclass350_wkflw
+# 65amg
+```
+
+```{r}
+gridvals <- tibble(neighbors = seq(1, 124))
+
+sclass350_results <- sclass350_wkflw %>%
+  tune_grid(resamples = sclass350_vfold, grid = gridvals) %>%
+  collect_metrics()
+
+# show all the results
+sclass350_results
+```
+```{r rmse_x_k}
+kp1 <- sclass350_results %>% 
+  filter(.metric == "rmse") %>% 
+  select(neighbors, mean) %>% 
+  mutate(highlight = if_else(neighbors == 6, "h", "l")) %>% 
+  ggplot() + 
+  geom_point(aes(x = neighbors, y = mean, color = highlight)) + 
+  scale_color_brewer(palette = "Set1") +
+  xlim(0, 75) + 
+  labs(x = "Neighbors, K", y = "RMSE") 
+
+kp2 <- kp1 + 
+  theme_tufte() + 
+  theme(legend.position = "none")
+
+kp2
 ```
 
 
+```{r min_rmse}
+# show only the row of minimum RMSPE
+sclass350_min <- sclass350_results %>%
+  filter(.metric == "rmse") %>%
+  filter(mean == min(mean)) 
+
+sclass350_min %>%  
+    kbl(booktabs = TRUE,
+             format = "latex",
+             caption = "Minimum RMSE",
+             escape = FALSE
+             ) %>% 
+  kable_styling(latex_options = "hold_position")
+```
+Smallest RMSPE occurs at $K = 6$.
+
+```{r evaltest}
+set.seed(350)
+kmin <- sclass350_min %>% pull(neighbors)
+sclass350_spec <- nearest_neighbor(weight_func = "rectangular", neighbors = kmin) %>%
+  set_engine("kknn") %>%
+  set_mode("regression")
+
+sclass350_fit <- workflow() %>%
+  add_recipe(sclass350_recipe) %>%
+  add_model(sclass350_spec) %>%
+  fit(data = sclass350_train)
+
+sclass350_summary <- sclass350_fit %>%
+  predict(sclass350_test) %>%
+  bind_cols(sclass350_test) %>%
+  metrics(truth = price, estimate = .pred)
+
+sclass350_summary
+```
+
+```{r}
+set.seed(350)
+sclass350_preds <- sclass350_fit %>%
+  predict(sclass350_train) %>%
+  bind_cols(sclass350_train)
+
+plot_final <- ggplot(sclass350_preds, aes(x = mileage, y = price)) +
+  geom_point(alpha = 0.4) +
+  xlab("Mileage") +
+  ylab("Price (USD)") +
+  scale_y_continuous(labels = dollar_format()) +
+  geom_line(data = sclass350_preds, aes(x = mileage, y = .pred), 
+            color = "tomato") +
+  ggtitle(paste0("K = ", kmin)) 
+
+plot_final + theme_tufte()
+```
 
 
 ```{r bib, include=FALSE}
