@@ -224,9 +224,14 @@ p3
 workingday_labs <- c("Not working day", "Working day")
 names(workingday_labs) <- c(0, 1)
 
-p1 + geom_smooth(aes(y = total), color = palette_light()["red"]) + 
+p2 <- p1 + geom_smooth(aes(y = total), color = palette_light()["red"]) + 
   facet_grid(. ~ workingday,
-                labeller = labeller(workingday = workingday_labs))
+                labeller = labeller(workingday = workingday_labs))  
+
+p2 + 
+  labs(x = "Hour of day (24hr)",
+       y = "Average rentals") +
+  theme_tufte()
 ```
 
 \pagebreak 
@@ -272,9 +277,7 @@ airport_codes <- readr::read_csv(url("https://ourairports.com/data/airports.csv"
          iso_region, municipality, latitude_deg, longitude_deg) %>% 
   rename(latitude = latitude_deg,
          longitude = longitude_deg)
-```
 
-```{r flightpath, echo=FALSE, cache=TRUE}
 # Join to get long/lat
 abia <- abia %>% 
   left_join(airport_codes, by = c("Origin" = "iata_code")) %>% 
@@ -286,6 +289,35 @@ abia <- abia %>%
          dest_lat = latitude,
          dest_lon = longitude) %>% 
   select(1:30, 35:37, 42:43)
+```
+
+```{r top5_tab, eval=FALSE, cache=TRUE, include=FALSE}
+# Top five table
+num_flights <- abia %>% 
+  group_by(dest_name) %>% 
+  tally() %>% 
+  rename(Destination = dest_name,
+         Count = n) %>% 
+  filter(Count > 400)
+
+color_me_a <- which(str_detect(num_flights$Destination, 
+        "Dallas|Houston|Phoenix|Denver"))
+color_me_b <- which(str_detect(num_flights$Destination, "Austin"))
+
+knitr::kable(num_flights, 
+             booktabs = TRUE,
+             format = "latex",
+             caption = "Number of flights in and out of Austin Bergstrom. Top 5 airports highlighted in pink",
+             escape = FALSE
+             ) %>% 
+  kable_styling(latex_options = "hold_position") %>%
+  row_spec(color_me_a, color = "black", background = "#fddaec") %>% 
+  row_spec(color_me_b, color = "black", background = "#ccebc5")
+```
+
+Here, we visualize the flightpaths available in the dataset. We only observe domestic flights. Each vertex represents an airport, and each edge is a flight between Austin Bergstrom (green) and another airport.
+
+```{r flightpath, echo=FALSE, cache=TRUE}
 
 # US Map
 if (require("maps")) {
@@ -326,35 +358,48 @@ f1 <- usmap +
 f1 + theme_map()
 ```
 
-```{r top5_tab, echo=FALSE, cache=TRUE}
-# Top five table
-num_flights <- abia %>% 
-  group_by(dest_name) %>% 
+In an effort to narrow down the dataset, we want to find which carriers complete 90\% of the flights between Austin and any of these other destinations. We find that 10 out of 16 carriers complete 90\% of flights. For these purposes, 90\% is largely arbitrary, a more careful analysis would consider the impact of dropping these 6 carriers. For example, maybe a dropped carrier provides all of the flights to a particular region. We do not address those concerns here. 
+
+```{r cumsum, echo=FALSE}
+# find total number of flights by group and total
+tot_flights <- abia %>% 
+  group_by(UniqueCarrier) %>% 
   tally() %>% 
-  rename(Destination = dest_name,
-         Count = n) %>% 
-  filter(Count > 400)
+  as_tibble() %>% 
+  select(2) %>% 
+  sum()
 
-color_me_a <- which(str_detect(num_flights$Destination, 
-        "Dallas|Houston|Phoenix|Denver"))
-color_me_b <- which(str_detect(num_flights$Destination, "Austin"))
+# get top 90% of flights as df
+abia90perc <- abia %>% 
+  group_by(UniqueCarrier) %>% 
+  tally() %>% 
+  mutate(perc_flights = n / tot_flights) %>% 
+  arrange(desc(perc_flights)) %>% 
+  mutate(cum_sum = cumsum(perc_flights)) %>% 
+  slice(1:10) 
 
-knitr::kable(num_flights, 
-             booktabs = TRUE,
+# save list of top carriers
+top10carriers <- abia90perc$UniqueCarrier
+
+# print table of contribution by carrier
+abia90perc %>% 
+  kbl(
+    booktabs = TRUE,
              format = "latex",
-             caption = "Number of flights in and out of Austin Bergstrom. Top 5 airports highlighted in pink",
-             escape = FALSE
+             caption = "Top carriers by number of flights",
+             escape = TRUE
              ) %>% 
-  kable_styling(latex_options = "hold_position") %>%
-  row_spec(color_me_a, color = "black", background = "#fddaec") %>% 
-  row_spec(color_me_b, color = "black", background = "#ccebc5")
+  kable_styling(latex_options = "hold_position") 
+
+# save a df filtering out bottom carriers
+abia_topcarriers <- abia %>% filter(UniqueCarrier %in% top10carriers)
 ```
 
-What is the probability of delay by an airline?
+A carrier delay is where the cause of the cancellation or delay was due to circumstances within the airline's control (e.g. maintenance or crew problems, aircraft cleaning, baggage loading, fueling, etc.). What is the probability of carrier delay by an airline?
 
-```{r mindelay, echo=FALSE, cache=TRUE, fig.cap="Probability of delay by carrier", message=FALSE, warning=FALSE, fig.width=9, fig.height=7}
+```{r mindelay, echo=FALSE, cache=TRUE, fig.cap="Probability of delay by carrier", message=FALSE, warning=FALSE, fig.width=5, fig.height=3}
 
-pr1 <- abia %>% 
+pr1 <- abia_topcarriers %>% 
   group_by(UniqueCarrier) %>% 
   add_tally() %>% 
   rename(tot_flight = n) %>% 
@@ -380,9 +425,10 @@ pr3 <- pr2 +
 pr3
 ```
 
+Here, we show the probability of carrier delay by day of week. Mondays and Fridays have the highest likelihood of a carrier delay.
 
-```{r probdelay_day, eval=FALSE, include=FALSE}
-gr1 <- abia %>% 
+```{r probdelay_day, echo=FALSE, fig.cap="Probability of carrier delay by day of week", fig.height=3, fig.width=5, cache=TRUE}
+pdd1 <- abia_topcarriers %>% 
   group_by(UniqueCarrier, DayOfWeek) %>% 
   add_tally() %>% 
   rename(tot_flight = n) %>% 
@@ -392,32 +438,43 @@ gr1 <- abia %>%
   mutate(num_carr_delay = sum(CarrierDelay_binary, na.rm = TRUE)) %>% 
   select(-5) %>% 
   distinct(UniqueCarrier, DayOfWeek, .keep_all = TRUE) %>% 
-  mutate(prob_carr_delay = round((num_carr_delay / tot_flight)*100, 3))
+  mutate(prob_carr_delay = round((num_carr_delay / tot_flight)*100, 3)) %>% 
+  ungroup() 
 
-gr2 <- gr1 %>% 
+DayOfWeek_lab <- c("1" = "Mon", "2" = "Tues", "3" = "Wed", "4" = "Thurs", 
+                   "5" = "Fri", "6" = "Sat", "7" = "Sun")
+
+pdd2 <- pdd1 %>% 
+  group_by(DayOfWeek) %>% 
+  mutate(prob_carr_delay = sum(prob_carr_delay)) %>% 
+  distinct(prob_carr_delay) %>% 
   ggplot() +
-  geom_col(aes(x = DayOfWeek, y = prob_carr_delay), 
-           fill = palette_light()["blue"]) +
-  scale_y_continuous(labels=function(x) paste0(x / 10, "%")) 
+  geom_col(aes(x = factor(DayOfWeek), y = prob_carr_delay), 
+           fill = palette_dark()["blue"], 
+           alpha = 0.75, color = "black") +
+  scale_y_continuous(labels=function(x) paste0(x / 10, "%")) +
+  scale_x_discrete(labels = DayOfWeek_lab)
 
-gr3 <- gr2 +
+pdd3 <- pdd2 +
   labs(x = "Day of Week", y = "Probability of Carrier Delay") + 
   theme_tufte() 
+
+pdd3
 ```
 
+It seems that flying on Mondays and Fridays is associated with the highest probability of encountering a carrier delay. We could change the `delay` variable and repeat this analysis for all other delays if we wish.
 
-
-
+\pagebreak
 
 # K-Nearest Neighbors
 
-```{r sclass, warning=FALSE, include=FALSE}
+```{r sclass, cache=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
 sclass <- read_csv("../../ECO395M/data/sclass.csv") %>% 
   filter(trim %in% c("350", "65 AMG"))
 
 # Filter data
 sclass350 <- sclass %>% filter(trim == "350")
-sclass65amg <- sclass %>% filter(trim == "65 AMG")
+sclass65 <- sclass %>% filter(trim == "65 AMG")
 
 # Table
 sclass %>% 
@@ -425,19 +482,19 @@ sclass %>%
   tally() %>% 
   kbl(booktabs = TRUE,
              format = "latex",
-             caption = "Count of Trim",
+             caption = "Count by trim",
              escape = FALSE
              ) %>% 
   kable_styling(latex_options = "hold_position")
 ```
 
-```{r eval=FALSE, include=FALSE}
+```{r eval=FALSE, cache=TRUE, message=FALSE, warning=FALSE, include=FALSE}
 sclass %>% 
   ggplot() + 
   geom_point(aes(x = mileage, y = price, color = trim))
 ```
 
-```{r traintest, echo=TRUE}
+```{r traintest, cache=TRUE, echo=FALSE}
 set.seed(350)
 
 # split into train/test
@@ -445,12 +502,14 @@ sclass350_split <- initial_split(sclass350, prop = 0.6, strata = price)
 sclass350_train <- training(sclass350_split)
 sclass350_test <- testing(sclass350_split)
 
-sclass65amg_split <- initial_split(sclass65amg, prop = 0.6, strata = price)
-sclass65amg_train <- training(sclass65amg_split)
-sclass65amg_test <- testing(sclass65amg_split)
+sclass65_split <- initial_split(sclass65, prop = 0.6, strata = price)
+sclass65_train <- training(sclass65_split)
+sclass65_test <- testing(sclass65_split)
 ```
 
-```{r modspec}
+## sclass 350
+
+```{r modspec350, cache=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
 # 350
 sclass350_recipe <- recipe(price ~ mileage, data = sclass350_train) %>%
   step_scale(all_predictors()) %>%
@@ -465,12 +524,9 @@ sclass350_vfold <- vfold_cv(sclass350_train, v = 2, strata = price)
 sclass350_wkflw <- workflow() %>%
   add_recipe(sclass350_recipe) %>%
   add_model(sclass350_spec)
-
-sclass350_wkflw
-# 65amg
 ```
 
-```{r}
+```{r res350, cache=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
 gridvals <- tibble(neighbors = seq(1, 124))
 
 sclass350_results <- sclass350_wkflw %>%
@@ -478,16 +534,18 @@ sclass350_results <- sclass350_wkflw %>%
   collect_metrics()
 
 # show all the results
-sclass350_results
+# sclass350_results
 ```
-```{r rmse_x_k}
+
+
+```{r rmse_x_k_350, cache=TRUE, echo=FALSE, fig.cap="RMSE versus k", fig.height=3, fig.width=5, warning=FALSE}
 kp1 <- sclass350_results %>% 
   filter(.metric == "rmse") %>% 
   select(neighbors, mean) %>% 
-  mutate(highlight = if_else(neighbors == 6, "h", "l")) %>% 
+  mutate(highlight = if_else(mean == min(mean), "h", "l")) %>% 
   ggplot() + 
   geom_point(aes(x = neighbors, y = mean, color = highlight)) + 
-  scale_color_brewer(palette = "Set1") +
+  scale_color_manual(values = c("tomato", "grey")) +
   xlim(0, 75) + 
   labs(x = "Neighbors, K", y = "RMSE") 
 
@@ -499,7 +557,7 @@ kp2
 ```
 
 
-```{r min_rmse}
+```{r min_rmse_350, cache=TRUE, echo=FALSE}
 # show only the row of minimum RMSPE
 sclass350_min <- sclass350_results %>%
   filter(.metric == "rmse") %>%
@@ -509,13 +567,14 @@ sclass350_min %>%
     kbl(booktabs = TRUE,
              format = "latex",
              caption = "Minimum RMSE",
-             escape = FALSE
+             escape = TRUE
              ) %>% 
   kable_styling(latex_options = "hold_position")
-```
-Smallest RMSPE occurs at $K = 6$.
 
-```{r evaltest}
+print(paste("The smallest rmse occurs at K =", as.numeric(sclass350_min[,1])))
+```
+
+```{r evaltest_350, cache=TRUE, include=FALSE}
 set.seed(350)
 kmin <- sclass350_min %>% pull(neighbors)
 sclass350_spec <- nearest_neighbor(weight_func = "rectangular", neighbors = kmin) %>%
@@ -535,7 +594,7 @@ sclass350_summary <- sclass350_fit %>%
 sclass350_summary
 ```
 
-```{r}
+```{r pred_350, cache=TRUE, echo=FALSE, fig.height = 3, fig.width = 5, fig.cap="Overlaid fitted model for optimal value of K, where red is the 65 AMG trim and blue is the 350 trim."}
 set.seed(350)
 sclass350_preds <- sclass350_fit %>%
   predict(sclass350_train) %>%
@@ -554,11 +613,135 @@ plot_final + theme_tufte()
 ```
 
 
+\pagebreak
+
+## sclass 65 AMG
+
+```{r modspec65, cache=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+# 65 AMG
+sclass65_recipe <- recipe(price ~ mileage, data = sclass65_train) %>%
+  step_scale(all_predictors()) %>%
+  step_center(all_predictors())
+
+sclass65_spec <- nearest_neighbor(weight_func = "rectangular", neighbors = tune()) %>%
+  set_engine("kknn") %>%
+  set_mode("regression")
+
+sclass65_vfold <- vfold_cv(sclass65_train, v = 2, strata = price)
+
+sclass65_wkflw <- workflow() %>%
+  add_recipe(sclass65_recipe) %>%
+  add_model(sclass65_spec)
+```
+
+```{r res65, cache=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+gridvals <- tibble(neighbors = seq(1, 50))
+
+sclass65_results <- sclass65_wkflw %>%
+  tune_grid(resamples = sclass65_vfold, grid = gridvals) %>%
+  collect_metrics()
+
+# show all the results
+# sclass350_results
+```
+
+
+```{r rmse_x_k_65, cache=TRUE, echo=FALSE, fig.height = 3, fig.width = 5, fig.cap="RMSE versus K"}
+kp1 <- sclass65_results %>% 
+  filter(.metric == "rmse") %>% 
+  select(neighbors, mean) %>% 
+  mutate(highlight = if_else(mean == min(mean), "h", "l")) %>% 
+  ggplot() + 
+  geom_point(aes(x = neighbors, y = mean, color = highlight)) + 
+  scale_color_manual(values = c("tomato", "grey")) +
+  xlim(0, 75) + 
+  labs(x = "Neighbors, K", y = "RMSE") 
+
+kp2 <- kp1 + 
+  theme_tufte() + 
+  theme(legend.position = "none")
+
+kp2
+```
+
+
+```{r min_rmse_65, cache=TRUE, echo=FALSE}
+# show only the row of minimum RMSPE
+sclass65_min <- sclass65_results %>%
+  filter(.metric == "rmse") %>%
+  filter(mean == min(mean)) 
+
+sclass65_min %>%  
+    kbl(booktabs = TRUE,
+             format = "latex",
+             caption = "Minimum RMSE",
+             escape = TRUE
+             ) %>% 
+  kable_styling(latex_options = "hold_position")
+
+print(paste("The smallest rmse occurs at K =", as.numeric(sclass65_min[,1])))
+```
+
+```{r evaltest_65, cache=TRUE, include=FALSE}
+set.seed(350)
+kmin <- sclass65_min %>% pull(neighbors)
+sclass65_spec <- nearest_neighbor(weight_func = "rectangular", neighbors = kmin) %>%
+  set_engine("kknn") %>%
+  set_mode("regression")
+
+sclass65_fit <- workflow() %>%
+  add_recipe(sclass65_recipe) %>%
+  add_model(sclass65_spec) %>%
+  fit(data = sclass65_train)
+
+sclass65_summary <- sclass65_fit %>%
+  predict(sclass65_test) %>%
+  bind_cols(sclass65_test) %>%
+  metrics(truth = price, estimate = .pred)
+
+sclass65_summary
+```
+
+```{r pred_65, cache=TRUE,echo=FALSE, fig.height = 3, fig.width = 5, fig.cap="Fitted model for optimal value of K"}
+set.seed(350)
+sclass65_preds <- sclass65_fit %>%
+  predict(sclass65_train) %>%
+  bind_cols(sclass65_train)
+
+plot_final <- ggplot(sclass65_preds, aes(x = mileage, y = price)) +
+  geom_point(alpha = 0.4) +
+  xlab("Mileage") +
+  ylab("Price (USD)") +
+  scale_y_continuous(labels = dollar_format()) +
+  geom_line(data = sclass65_preds, aes(x = mileage, y = .pred), 
+            color = "tomato") +
+  ggtitle(paste0("K = ", kmin)) 
+
+plot_final + theme_tufte()
+```
+
+It is also interesting to look at both `mileage` versus `price` graphs together.
+
+```{r pred_65_350, cache=TRUE,echo=FALSE, fig.height = 3, fig.width = 5, fig.cap="Fitted model for optimal value of K"}
+plot_joint <- ggplot() +
+  geom_point(data = sclass65_preds, aes(x = mileage, y = price), color = "tomato", alpha = 0.4) +
+  geom_point(data = sclass350_preds, aes(x = mileage, y = price), color = "dodgerblue", alpha = 0.4) +
+  xlab("Mileage") +
+  ylab("Price (USD)") +
+  scale_y_continuous(labels = dollar_format()) +
+  geom_line(data = sclass65_preds, aes(x = mileage, y = .pred, color = "65 AMG")) +
+  geom_line(data = sclass350_preds, aes(x = mileage, y = .pred, color = "350")) + 
+  scale_color_manual(values = c("blue", "red"))
+
+plot_joint + 
+  theme_tufte() + 
+  theme(legend.title = element_blank())
+```
+
+
 ```{r bib, include=FALSE}
 # create a bib file for the R packages used in this document
 knitr::write_bib(c('base', 'rmarkdown'), file = 'skeleton.bib')
 ```
 
-```{r eval=FALSE, include=FALSE}
-sessioninfo::session_info()
-```
+
