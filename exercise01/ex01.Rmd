@@ -8,6 +8,7 @@ header-includes:
   - \floatplacement{figure}{H}
 output:
   tufte::tufte_handout:
+    keep_md: yes
     citation_package: natbib
     latex_engine: xelatex
   tufte::tufte_html: default
@@ -216,6 +217,8 @@ p3 <- p2 +
 p3
 ```
 
+This plot shows the total bike rentals per day by hour (24hr). The red line shows the averages by hour, and is smooth to connect across discrete hours counts. The points are "jittered" to show density. It seems bike rentals peak before and after work hours. This might indicate folks using the bikes to commute to and from work.
+
 \pagebreak
 
 ## Plot 2
@@ -234,6 +237,8 @@ p2 +
   theme_tufte()
 ```
 
+The design of this plot is identical to the previous, except now it is faceted by whether it is a working day or not. On non-working days, we see a "normal distribution" of bike rentals peaking in the early afternoon. On working days, we see the bimodal humps just before work and just after; again, this likely indicates bike rentals for commuting to and from work.
+
 \pagebreak 
 
 ## Plot 3
@@ -244,16 +249,14 @@ g1 <- bikeshare %>%
     group_by(weathersit) %>% 
     mutate(avg_tot = mean(total)) %>% 
     ggplot() +
-    geom_col(aes(x = weathersit, 
-                 y = avg_tot, 
+    geom_col(aes(x = weathersit, y = avg_tot, 
                  fill = factor(weathersit)))
 
 weathersit_labs <- c("Clear", "Mist", "Light Snow")
 
 g2 <- g1 + 
   scale_y_continuous(breaks = seq(0, 160000, by = 25000)) +
-  labs(x = "Weather Situation",
-       y = "Average rentals") +
+  labs(x = "Weather Situation", y = "Average rentals") +
   theme_tufte() +
   scale_fill_brewer(palette = "Set1", labels = weathersit_labs) +
   theme(legend.title = element_blank(),
@@ -262,8 +265,10 @@ g2 <- g1 +
         axis.ticks.x = element_blank()) 
 
 g2 + facet_grid(. ~ workingday,
-                labeller = labeller(workingday = workingday_labs))
+        labeller = labeller(workingday = workingday_labs))
 ```
+
+This plot breaks down bike rentals by weather. As expected, improvements in weather are associated with increased bike rentals, with less total rentals on non-working days.
 
 \pagebreak
 
@@ -719,6 +724,9 @@ plot_final <- ggplot(sclass65_preds, aes(x = mileage, y = price)) +
 
 plot_final + theme_tufte()
 ```
+
+The sclass 350 needs a higher value of K because more points might lead to overfitting for a lower value of K.
+
 
 It is also interesting to look at both `mileage` versus `price` graphs together.
 
