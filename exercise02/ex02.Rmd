@@ -1,0 +1,369 @@
+---
+title: "Exercise 02"
+author: "Scott Cohn"
+date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+options(scipen = 999,
+        pillar.sigfig = 6) 
+
+set.seed(395)
+
+library(tidyverse)
+library(tidymodels)
+library(tidyquant)
+library(kknn)
+library(lubridate)
+library(scales)
+library(patchwork)
+library(hrbrthemes)
+library(gcookbook)
+library(mosaic)
+library(mosaicData)
+```
+
+
+```{r}
+# funcs
+
+read_data <- function(df) {
+  #' read data from git url
+  #' INPUT: data set name
+  #' OUTPUT: dataframe
+  full_path <- paste("https://raw.githubusercontent.com/jgscott/ECO395M/master/data/", 
+                     df, sep = "")
+  df <- read_csv(full_path)
+  return(df)
+}
+
+```
+
+## Visualization
+
+```{r capmetro_import, eval=FALSE}
+# he hasn't uploaded data yet
+capmetro <- read_data("capmetro_UT.csv") %>%
+    # recode categorical vars
+    mutate(day_of_week = factor(day_of_week,
+                                levels = c("Mon", "Tue", "Wed","Thu",
+                                           "Fri","Sat","Sun")),
+           month = factor(month, levels=c("Sep", "Oct","Nov")))
+
+#capmetro %>% colnames()
+```
+
+
+## Saratoga House Prices
+
+```{r saratoga_import}
+saratoga_houses <- mosaicData::SaratogaHouses
+
+# features
+saratoga_houses %>% colnames()
+
+# head
+saratoga_houses %>% head()
+
+# Histogtam of saratoga house prices
+saratoga_houses %>%
+  ggplot(aes(x = price)) +
+  geom_histogram(bins = 50, fill = "dodgerblue", color = "black") + 
+  labs(x="Price", y="Count",
+     title="Distribution of Price",
+     subtitle="Saratoga Houses",
+     caption="Source: MosaicData") +
+  theme_ipsum(grid="Y")
+```
+
+### Linear Model
+
+We start with a very simple model. The first step is to create the train/test split.
+
+```{r saratoga_test_train, cache=TRUE}
+saratoga_split <- initial_split(saratoga_houses, strata = "price", prop = 0.75)
+
+saratoga_train <- training(saratoga_split)
+saratoga_test  <- testing(saratoga_split)
+
+dim(saratoga_train)
+dim(saratoga_split)
+```
+
+We can specify and fit our simple model.
+
+```{r lm_spec_model}
+lm_model <-
+    linear_reg() %>%
+    set_mode("regression") %>%
+    set_engine("lm")
+
+# View obj properties
+lm_model
+
+lm_fit <- lm_model %>%
+  fit(price ~ .,
+      data = saratoga_train)
+
+lm_fit
+```
+
+We can evaluate this simple model by predicting price for the both the training and test data:
+
+```{r}
+results_train <- lm_fit %>%
+  predict(new_data = saratoga_train) %>%
+  mutate(
+    truth = saratoga_train$price,
+    model = "lm"
+  )
+
+results_test <- lm_fit %>%
+  predict(new_data = saratoga_test) %>%
+  mutate(
+    truth = saratoga_test$price,
+    model = "lm"
+  ) 
+```
+
+We can look at the `rmse` for what we've done thus far.
+
+```{r}
+results_train %>%
+  group_by(model) %>%
+  rmse(truth = truth, estimate = .pred)
+
+results_test %>%
+  group_by(model) %>%
+  rmse(truth = truth, estimate = .pred)
+```
+
+Yikes. Let's visualize:
+
+```{r}
+results_test %>%
+  mutate(train = "testing") %>%
+  bind_rows(results_train %>%
+    mutate(train = "training")) %>%
+  ggplot(aes(truth, .pred)) +
+  geom_abline(lty = 2, color = "gray80", size = 1) +
+  geom_point(alpha = 0.5, color = "tomato") +
+  facet_wrap(~train) +
+  labs(
+    x = "Truth",
+    y = "Predicted attendance",
+    color = "Type of model"
+  ) + 
+  theme_ipsum()
+```
+
+In a linear model, it is typically okay to expect the linear model to perform similarly on a test set as it would on the training set. As an exercise, we can see if this is true by dividing our training set into folds and evaluating on one heldout fold.
+
+```{r}
+set.seed(395)
+saratoga_folds <- vfold_cv(saratoga_train, strata = price)
+
+lm_res <- fit_resamples(
+  lm_model,
+  price ~ .,
+  saratoga_folds,
+  control = control_resamples(save_pred = TRUE)
+)
+
+lm_res %>%
+  collect_metrics()
+```
+
+We can create the same visualization across folds.
+
+```{r}
+lm_res %>%
+  unnest(.predictions) %>%
+  ggplot(aes(price, .pred, color = id)) +
+  geom_abline(lty = 2, color = "gray80", size = 1) +
+  geom_point(alpha = 0.5) +
+  labs(
+    x = "Truth",
+    y = "Predicted price",
+    color = NULL
+  ) + 
+  theme_ipsum()
+```
+
+
+
+```{r saratoga_preproc_ft_engin}
+
+saratoga_rec <-
+  recipe(price ~ ., data = saratoga_test) %>%
+  step_YeoJohnson(all_numeric(), -all_outcomes()) %>%
+  step_normalize(all_numeric(), -all_outcomes()) %>%
+  step_dummy(all_nominal()) 
+
+# Check if correct
+saratoga_rec %>%
+  prep() %>%
+  bake(new_data = saratoga_test)
+```
+
+
+
+```{r lm_workflow}
+saratoga_workflow <- workflow() %>% 
+  add_model(lm_model) %>% 
+  add_recipe(saratoga_rec)
+```
+
+
+```{r lm_train_model}
+saratoga_fit <- saratoga_workflow %>% 
+          last_fit(split = saratoga_split)
+
+# Obtain performance metrics on test data
+saratoga_fit %>% collect_metrics()
+
+# View lm_fit properties
+summary(saratoga_fit$fit)
+
+par(mfrow=c(2,2)) # plot all 4 plots in one
+
+plot(saratoga_fit$fit, 
+     pch = 16,    # optional parameters to make points blue
+     col = '#006EA1')
+
+# Obtain test set predictions data frame
+test_results <- saratoga_fit %>% 
+                collect_predictions()
+
+test_results
+
+ggplot(data = test_results,
+       mapping = aes(x = .pred, y = price)) +
+  geom_point(color = '#006EA1', alpha = 0.25) +
+  geom_abline(intercept = 0, slope = 1, color = 'orange') +
+  labs(title = 'Linear Regression Results - Home Sales Test Set',
+       x = 'Predicted Selling Price',
+       y = 'Actual Selling Price') + 
+  theme_ipsum()
+```
+
+
+```{r}
+# 3 fold cross validation (for speed)
+saratoga_vfold <- vfold_cv(saratoga_train, v = 3, repeats = 1, strata = "price")
+saratoga_vfold %>% 
+  mutate(df_ana = map(splits, analysis),
+         df_ass = map(splits, assessment))
+```
+
+
+### KNN Model
+
+We can use the same train/test splits as the linear model. Now we just change the model engine.
+
+```{r}
+# spec model
+knn_reg <-
+  nearest_neighbor(
+    mode = "regression",
+    neighbors = tune("K"),
+  ) %>%
+  set_engine("kknn")
+```
+
+```{r}
+# feature engineering
+knn_rec <- 
+  recipe(price ~ ., data = saratoga_train) %>%
+  step_log(price, base = 10) %>% 
+  step_log(landValue, base = 10) %>% 
+  step_YeoJohnson(livingArea) %>%
+  step_dummy(all_nominal()) 
+
+# check
+knn_rec %>% 
+  prep() %>%
+  bake(new_data = saratoga_test)
+```
+
+
+```{r}
+# create workflow
+knn_reg_wf <- workflow() %>% 
+              add_model(knn_reg) %>% 
+              add_recipe(knn_rec)
+
+# tune
+knn_reg_tuning <- knn_reg_wf %>% 
+                  tune_grid(resamples = saratoga_folds,
+                            grid = seq(1, 150, 10))
+
+best_k_reg <- knn_reg_tuning %>% show_best('rsq')
+
+final_knn_reg_wf <- knn_reg_wf %>% 
+                    finalize_workflow(best_k_reg)
+```
+
+
+```{r}
+# train/test
+saratoga_knn_fit <- final_knn_reg_wf %>% 
+                 last_fit(split = saratoga_split)
+
+saratoga_knn_fit %>% collect_metrics()
+```
+
+```{r}
+# predictions
+saratoga_knn_results <- saratoga_knn_fit %>% 
+                     collect_predictions()
+
+# View results
+saratoga_knn_results
+```
+
+$R^2$ plot to see model performance:
+
+```{r}
+# Plot it
+ggplot(data = saratoga_knn_results,
+       mapping = aes(x = .pred, y = price)) +
+  geom_point(color = '#006EA1', alpha = 0.25) +
+  geom_abline(intercept = 0, slope = 1, color = 'tomato') +
+  labs(title = 'KNN Regression Results - Home Sales Test Set',
+       x = 'Predicted Selling Price',
+       y = 'Actual Selling Price') + 
+  theme_ipsum()
+```
+
+```{r}
+saratoga_knn_results %>%
+  #unnest(.predictions) %>%
+  ggplot(aes(price, .pred, color = id)) +
+  geom_abline(lty = 2, color = "gray80", size = 1) +
+  geom_point(alpha = 0.5) +
+  labs(
+    x = "Truth",
+    y = "Predicted price",
+    color = NULL
+  ) + 
+  theme_ipsum()
+```
+
+
+## Classification and retrospective sampling
+
+
+## Children and Hotel Reservations
+
+
+
+## Session Information 
+
+```{r sysinfo}
+sessionInfo()
+```
+
