@@ -8,10 +8,7 @@ output: github_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
-options(scipen = 999,
-        pillar.sigfig = 6) 
-
-set.seed(395)
+options(scipen = 999) 
 
 library(tidyverse)
 library(tidymodels)
@@ -21,6 +18,7 @@ library(lubridate)
 library(scales)
 library(patchwork)
 library(hrbrthemes)
+library(kableExtra)
 library(gcookbook)
 library(mosaic)
 library(mosaicData)
@@ -59,7 +57,7 @@ capmetro <- read_data("capmetro_UT.csv") %>%
 
 ## Saratoga House Prices
 
-```{r saratoga_import}
+```{r saratoga_import, cache=TRUE}
 saratoga_houses <- mosaicData::SaratogaHouses
 
 # features
@@ -79,11 +77,12 @@ saratoga_houses %>%
   theme_ipsum(grid="Y")
 ```
 
-### Linear Model
+### Build Model
 
 We start with a very simple model. The first step is to create the train/test split.
 
 ```{r saratoga_test_train, cache=TRUE}
+set.seed(395)
 saratoga_split <- initial_split(saratoga_houses, strata = "price", prop = 0.75)
 
 saratoga_train <- training(saratoga_split)
@@ -93,265 +92,185 @@ dim(saratoga_train)
 dim(saratoga_split)
 ```
 
-We can specify and fit our simple model.
+Let's use cross-validation to split the training set into k-folds.
 
-```{r lm_spec_model}
-lm_model <-
+```{r, cache=TRUE}
+# 3 fold cross validation (for speed)
+saratoga_vfold <- vfold_cv(saratoga_train, v = 3, repeats = 1, strata = "price")
+saratoga_vfold 
+```
+
+We are interested in two different models, a linear regression model and a knn regression model. We start by creating the model specifications.
+
+```{r mod_spec, cache=TRUE}
+lm_spec <-
     linear_reg() %>%
     set_mode("regression") %>%
     set_engine("lm")
 
-# View obj properties
-lm_model
+lm_spec
 
-lm_fit <- lm_model %>%
-  fit(price ~ .,
-      data = saratoga_train)
-
-lm_fit
-```
-
-We can evaluate this simple model by predicting price for the both the training and test data:
-
-```{r}
-results_train <- lm_fit %>%
-  predict(new_data = saratoga_train) %>%
-  mutate(
-    truth = saratoga_train$price,
-    model = "lm"
-  )
-
-results_test <- lm_fit %>%
-  predict(new_data = saratoga_test) %>%
-  mutate(
-    truth = saratoga_test$price,
-    model = "lm"
-  ) 
-```
-
-We can look at the `rmse` for what we've done thus far.
-
-```{r}
-results_train %>%
-  group_by(model) %>%
-  rmse(truth = truth, estimate = .pred)
-
-results_test %>%
-  group_by(model) %>%
-  rmse(truth = truth, estimate = .pred)
-```
-
-Yikes. Let's visualize:
-
-```{r}
-results_test %>%
-  mutate(train = "testing") %>%
-  bind_rows(results_train %>%
-    mutate(train = "training")) %>%
-  ggplot(aes(truth, .pred)) +
-  geom_abline(lty = 2, color = "gray80", size = 1) +
-  geom_point(alpha = 0.5, color = "tomato") +
-  facet_wrap(~train) +
-  labs(
-    x = "Truth",
-    y = "Predicted attendance",
-    color = "Type of model"
-  ) + 
-  theme_ipsum()
-```
-
-In a linear model, it is typically okay to expect the linear model to perform similarly on a test set as it would on the training set. As an exercise, we can see if this is true by dividing our training set into folds and evaluating on one heldout fold.
-
-```{r}
-set.seed(395)
-saratoga_folds <- vfold_cv(saratoga_train, strata = price)
-
-lm_res <- fit_resamples(
-  lm_model,
-  price ~ .,
-  saratoga_folds,
-  control = control_resamples(save_pred = TRUE)
-)
-
-lm_res %>%
-  collect_metrics()
-```
-
-We can create the same visualization across folds.
-
-```{r}
-lm_res %>%
-  unnest(.predictions) %>%
-  ggplot(aes(price, .pred, color = id)) +
-  geom_abline(lty = 2, color = "gray80", size = 1) +
-  geom_point(alpha = 0.5) +
-  labs(
-    x = "Truth",
-    y = "Predicted price",
-    color = NULL
-  ) + 
-  theme_ipsum()
-```
-
-
-
-```{r saratoga_preproc_ft_engin}
-
-saratoga_rec <-
-  recipe(price ~ ., data = saratoga_test) %>%
-  step_YeoJohnson(all_numeric(), -all_outcomes()) %>%
-  step_normalize(all_numeric(), -all_outcomes()) %>%
-  step_dummy(all_nominal()) 
-
-# Check if correct
-saratoga_rec %>%
-  prep() %>%
-  bake(new_data = saratoga_test)
-```
-
-
-
-```{r lm_workflow}
-saratoga_workflow <- workflow() %>% 
-  add_model(lm_model) %>% 
-  add_recipe(saratoga_rec)
-```
-
-
-```{r lm_train_model}
-saratoga_fit <- saratoga_workflow %>% 
-          last_fit(split = saratoga_split)
-
-# Obtain performance metrics on test data
-saratoga_fit %>% collect_metrics()
-
-# View lm_fit properties
-summary(saratoga_fit$fit)
-
-par(mfrow=c(2,2)) # plot all 4 plots in one
-
-plot(saratoga_fit$fit, 
-     pch = 16,    # optional parameters to make points blue
-     col = '#006EA1')
-
-# Obtain test set predictions data frame
-test_results <- saratoga_fit %>% 
-                collect_predictions()
-
-test_results
-
-ggplot(data = test_results,
-       mapping = aes(x = .pred, y = price)) +
-  geom_point(color = '#006EA1', alpha = 0.25) +
-  geom_abline(intercept = 0, slope = 1, color = 'orange') +
-  labs(title = 'Linear Regression Results - Home Sales Test Set',
-       x = 'Predicted Selling Price',
-       y = 'Actual Selling Price') + 
-  theme_ipsum()
-```
-
-
-```{r}
-# 3 fold cross validation (for speed)
-saratoga_vfold <- vfold_cv(saratoga_train, v = 3, repeats = 1, strata = "price")
-saratoga_vfold %>% 
-  mutate(df_ana = map(splits, analysis),
-         df_ass = map(splits, assessment))
-```
-
-
-### KNN Model
-
-We can use the same train/test splits as the linear model. Now we just change the model engine.
-
-```{r}
-# spec model
-knn_reg <-
+knn_spec <-
   nearest_neighbor(
     mode = "regression",
     neighbors = tune("K"),
   ) %>%
   set_engine("kknn")
+
+knn_spec
 ```
 
-```{r}
+Next we put together a tidymodels `workflow()`:
+
+```{r, cache=TRUE}
+saratoga_wf <-
+  workflow() %>%
+  add_formula(price ~ .)
+
+saratoga_wf
+```
+
+There is no model yet. Now we can add a model, and fit to the resamples.
+
+```{r, cache=TRUE}
+set.seed(350)
+lm_rs <- 
+  saratoga_wf %>%
+  add_model(lm_spec) %>%
+  fit_resamples(
+    resamples = saratoga_vfold,
+    control = control_resamples(save_pred = TRUE)
+  )
+
+lm_rs
+```
+
+Second, we can fit the knn model. This one requires a bit more work.
+
+```{r, cache=TRUE}
+set.seed(350)
 # feature engineering
 knn_rec <- 
-  recipe(price ~ ., data = saratoga_train) %>%
-  step_log(price, base = 10) %>% 
-  step_log(landValue, base = 10) %>% 
-  step_YeoJohnson(livingArea) %>%
-  step_dummy(all_nominal()) 
+  recipe(price ~ ., data = saratoga_train)
 
-# check
-knn_rec %>% 
-  prep() %>%
-  bake(new_data = saratoga_test)
+# workflow
+knn_wf <- 
+  workflow() %>%
+  add_model(knn_spec) %>%
+  add_recipe(knn_rec)
+
+gridvals <- tibble(K = seq(1, 200))
+
+knn_rs <- 
+  knn_wf %>%
+  tune_grid(
+    resamples = saratoga_vfold,
+    grid = gridvals,
+    control = control_resamples(save_pred = TRUE)
+  ) 
+
+knn_rs
+```
+Now we have fit each of the candidate models to the resampled training set. For the knn regression, we take the *minimum* RMSE to find the best setting for the number of neighbors.
+
+```{r, cache=TRUE}
+set.seed(350)
+# show only the row of minimum RMSE
+knn_min <- knn_rs %>%
+  collect_metrics() %>% 
+  filter(.metric == "rmse") %>%
+  filter(mean == min(mean))
+knn_min
 ```
 
+### Evaluate Model
 
-```{r}
-# create workflow
-knn_reg_wf <- workflow() %>% 
-              add_model(knn_reg) %>% 
-              add_recipe(knn_rec)
+First, we evaluate the linear regression model.
 
-# tune
-knn_reg_tuning <- knn_reg_wf %>% 
-                  tune_grid(resamples = saratoga_folds,
-                            grid = seq(1, 150, 10))
+```{r, cache=TRUE}
+final_lm_wf <- 
+  saratoga_wf %>%
+  add_model(lm_spec) 
+  
+lm_fit <- 
+  final_lm_wf %>%
+  last_fit(split = saratoga_split)
 
-best_k_reg <- knn_reg_tuning %>% show_best('rsq')
+lm_fit %>% collect_metrics()
 
-final_knn_reg_wf <- knn_reg_wf %>% 
-                    finalize_workflow(best_k_reg)
+lm_results <-
+  lm_fit %>%
+  collect_predictions()
+
+# view results
+lm_results
 ```
 
+For the linear model, we can look at coefficient estimates.
 
-```{r}
-# train/test
-saratoga_knn_fit <- final_knn_reg_wf %>% 
-                 last_fit(split = saratoga_split)
-
-saratoga_knn_fit %>% collect_metrics()
+```{r, cache=TRUE}
+lm_fit$.workflow[[1]] %>% 
+  tidy() %>% 
+  kable(digits = 4, "pipe") 
 ```
 
-```{r}
-# predictions
-saratoga_knn_results <- saratoga_knn_fit %>% 
-                     collect_predictions()
+And we can plot the results.
 
-# View results
-saratoga_knn_results
-```
-
-$R^2$ plot to see model performance:
-
-```{r}
-# Plot it
-ggplot(data = saratoga_knn_results,
-       mapping = aes(x = .pred, y = price)) +
-  geom_point(color = '#006EA1', alpha = 0.25) +
-  geom_abline(intercept = 0, slope = 1, color = 'tomato') +
-  labs(title = 'KNN Regression Results - Home Sales Test Set',
-       x = 'Predicted Selling Price',
-       y = 'Actual Selling Price') + 
-  theme_ipsum()
-```
-
-```{r}
-saratoga_knn_results %>%
+```{r, cache=TRUE}
+lm_results %>%
   #unnest(.predictions) %>%
-  ggplot(aes(price, .pred, color = id)) +
-  geom_abline(lty = 2, color = "gray80", size = 1) +
-  geom_point(alpha = 0.5) +
+  ggplot(aes(.pred, price)) +
+  geom_abline(lty = 2, color = "tomato", size = 1) +
+  geom_point(alpha = 0.5, color = "dodgerblue") +
   labs(
+    title = 'Linear Regression Results - Saratoga Test Set',
     x = "Truth",
     y = "Predicted price",
     color = NULL
   ) + 
   theme_ipsum()
 ```
+
+Next, we evaluate the KNN model.
+
+```{r, cache=TRUE}
+final_knn_wf <- 
+  knn_wf %>% 
+  finalize_workflow(knn_min)
+
+knn_fit <- 
+  final_knn_wf %>% 
+  last_fit(split = saratoga_split)
+
+knn_fit %>% collect_metrics()
+
+# predictions
+knn_results <- 
+  knn_fit %>% 
+  collect_predictions()
+
+# view results
+knn_results
+```
+
+And we can plot the results.
+
+```{r, cache=TRUE}
+knn_results %>%
+  #unnest(.predictions) %>%
+  ggplot(aes(.pred, price)) +
+  geom_abline(lty = 2, color = "tomato", size = 1) +
+  geom_point(alpha = 0.5, color = "dodgerblue") +
+  labs(
+    title = 'KNN Regression Results - Saratoga Test Set',
+    x = "Truth",
+    y = "Predicted price",
+    color = NULL
+  ) + 
+  theme_ipsum()
+```
+
+
 
 
 ## Classification and retrospective sampling
