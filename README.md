@@ -2,6 +2,8 @@
 
 This is a repository for problem sets in my course on data mining and statistical learning. Any individual project will have its own repository.
 
+See original course repo [here](https://github.com/jgscott/ECO395M).
+
 **Topics:**
 
 1. Version control and workflow
