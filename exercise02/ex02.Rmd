@@ -270,14 +270,51 @@ knn_results %>%
   theme_ipsum()
 ```
 
-
-
-
 ## Classification and retrospective sampling
+
+```{r}
+german_credit <- 
+  read_data("german_credit.csv") %>% 
+  select(-X1)
+```
+
+### Build logistic regression model
+
+```{r}
+german_credit %>%
+  group_by(Default, history) %>%
+  add_tally() %>% 
+  rename(num_default = n) %>% 
+  distinct(history, num_default) %>%
+  ungroup() %>%
+  group_by(history) %>%
+  mutate(tot_default = sum(num_default),
+         prob_default = (num_default / tot_default) * 100) %>%
+  filter(Default == 1) %>%
+  ggplot() +
+  geom_col(aes(x = history, y = prob_default, 
+             fill = history)) + 
+  scale_y_continuous(labels = function(x) paste0(x, "%")) +
+  scale_x_discrete(labels = c("Good", "Poor", "Terrible")) +
+  labs(x = "History", y = "Probability of Default") +
+  theme_ipsum(grid="Y") + 
+  theme(legend.title = element_blank(),
+        legend.position = "None")
+```
+
+
+Use the following:
+
+- `duration + amount + installment + age + history + purpose + foreign`
+
+```{r}
+
+```
+
+
 
 
 ## Children and Hotel Reservations
-
 
 
 ## Session Information 
