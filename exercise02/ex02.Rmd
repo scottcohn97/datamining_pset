@@ -13,7 +13,9 @@ options(scipen = 999)
 library(tidyverse)
 library(tidymodels)
 library(tidyquant)
+library(skimr)
 library(kknn)
+library(glmnet)
 library(lubridate)
 library(scales)
 library(patchwork)
@@ -60,11 +62,7 @@ capmetro <- read_data("capmetro_UT.csv") %>%
 ```{r saratoga_import, cache=TRUE}
 saratoga_houses <- mosaicData::SaratogaHouses
 
-# features
-saratoga_houses %>% colnames()
-
-# head
-saratoga_houses %>% head()
+skimr::skim(saratoga_houses)
 
 # Histogtam of saratoga house prices
 saratoga_houses %>%
@@ -123,6 +121,7 @@ knn_spec
 Next we put together a tidymodels `workflow()`:
 
 ```{r, cache=TRUE}
+# feature engineering
 saratoga_wf <-
   workflow() %>%
   add_formula(price ~ .)
@@ -145,7 +144,7 @@ lm_rs <-
 lm_rs
 ```
 
-Second, we can fit the knn model. This one requires a bit more work.
+Second, we can fit the KNN model. This one requires a bit more work.
 
 ```{r, cache=TRUE}
 set.seed(350)
@@ -159,6 +158,7 @@ knn_wf <-
   add_model(knn_spec) %>%
   add_recipe(knn_rec)
 
+# hyperparametering tuning
 gridvals <- tibble(K = seq(1, 200))
 
 knn_rs <- 
@@ -171,10 +171,12 @@ knn_rs <-
 
 knn_rs
 ```
-Now we have fit each of the candidate models to the resampled training set. For the knn regression, we take the *minimum* RMSE to find the best setting for the number of neighbors.
+
+Now we have fit each of the candidate models to the resampled training set. For the KNN regression, we take the *minimum* RMSE to find the best setting for the number of neighbors.
 
 ```{r, cache=TRUE}
 set.seed(350)
+# hyperparameter tuning
 # show only the row of minimum RMSE
 knn_min <- knn_rs %>%
   collect_metrics() %>% 
@@ -275,10 +277,16 @@ knn_results %>%
 ```{r}
 german_credit <- 
   read_data("german_credit.csv") %>% 
-  select(-X1)
+  select(-1) %>%
+  # set outcome as factor 
+  mutate(Default = as.factor(Default))
+
+skimr::skim(german_credit)
 ```
 
 ### Build logistic regression model
+
+First, we create a bar-plot of the percentage of default by credit history.
 
 ```{r}
 german_credit %>%
@@ -302,15 +310,159 @@ german_credit %>%
         legend.position = "None")
 ```
 
+Next, we create the train/test splits.
 
-Use the following:
+```{r}
+set.seed(395)
+german_split <- initial_split(german_credit, strata = "Default", prop = 0.75)
+
+german_train <- training(german_split)
+german_test  <- testing(german_split)
+
+# 3 fold cross validation (for speed)
+german_vfold <- vfold_cv(german_train, v = 3, repeats = 1, strata = "Default")
+german_vfold 
+```
+
+From the problem statement, we use the following features:
 
 - `duration + amount + installment + age + history + purpose + foreign`
 
-```{r}
+So the first step is to construct the model engine.
 
+```{r}
+log_spec <-
+  logistic_reg(penalty = tune(), mixture = 1) %>% 
+  set_engine("glmnet") %>% 
+  set_mode("classification") 
+
+log_spec
 ```
 
+Next, we define a recipe and workflow.
+
+```{r}
+set.seed(350)
+
+# varlist to keep
+varlist <- c("Default", "duration", "amount", "installment", "age", 
+             "history", "purpose", "foreign")
+
+# recipe // feature engineering
+log_rec <- 
+  recipe(Default ~ ., data = german_train) %>%
+  # remove vars not in varlist
+  step_rm(setdiff(colnames(german_credit), varlist)) %>%
+  #step_num2factor(default) %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>% 
+  step_zv(all_predictors()) %>% 
+  step_normalize(all_predictors())
+  
+# workflow
+log_wf <- 
+  workflow() %>%
+  add_model(log_spec) %>%
+  add_recipe(log_rec)
+```
+
+There is no model yet. Now we can add a model, and fit to the resamples. First, we need to create the grid for tuning.
+
+```{r}
+log_grid <- tibble(penalty = 10^seq(-4, -1, length.out = 30))
+
+# lowest penalty values
+log_grid %>% top_n(-5) 
+
+# highest penalty values
+log_grid %>% top_n(5)  
+```
+
+
+```{r, cache=TRUE}
+set.seed(350)
+
+log_rs <- 
+  log_wf %>% 
+  tune_grid(german_vfold,
+            grid = log_grid,
+            control = control_grid(save_pred = TRUE),
+            metrics = metric_set(roc_auc))
+
+log_rs
+```
+
+We can look at the area under the ROC curve against the range of penalty values.
+
+```{r}
+log_rs %>% 
+  collect_metrics() %>% 
+  ggplot(aes(x = penalty, y = mean)) + 
+  geom_point() + 
+  geom_line() + 
+  ylab("Area under the ROC Curve") +
+  scale_x_log10(labels = scales::label_number()) + 
+  theme_ipsum()
+```
+Here we see that model performance is typically better at smaller values. This indiates that the majority of predictors are important in this model. 
+
+```{r}
+top_models <-
+  log_rs %>% 
+  show_best("roc_auc", n = 15) %>% 
+  arrange(penalty) 
+
+top_models 
+```
+
+```{r}
+log_rs %>%
+  select_best()
+```
+It seems model 15 is our best choice. Let's look at an ROC plot.
+
+```{r}
+log_best <- 
+  log_rs %>% 
+  collect_metrics() %>% 
+  arrange(penalty) %>% 
+  slice(15)
+
+log_auc <- 
+  log_rs %>% 
+  collect_predictions(parameters = log_best) %>% 
+  roc_curve(Default, .pred_0) %>% 
+  mutate(model = "Logistic Regression")
+
+autoplot(log_auc)
+```
+
+This model is fine, but not that good.
+
+
+```{r}
+final_log_wf <- 
+  log_wf %>% 
+  finalize_workflow(log_best)
+
+log_fit <- 
+  final_log_wf %>% 
+  last_fit(split = german_split)
+
+log_fit %>% collect_metrics()
+
+# predictions
+log_results <- 
+  log_fit %>% 
+  collect_predictions()
+
+# view results
+log_results
+
+# ROC curve
+log_results %>% 
+  roc_curve(Default, .pred_0) %>% 
+  autoplot()
+```
 
 
 
