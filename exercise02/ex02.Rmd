@@ -6,7 +6,10 @@ output: github_document
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, 
+                      cache = TRUE,
+                      warning = FALSE, 
+                      message = FALSE)
 
 options(scipen = 999) 
 
@@ -39,13 +42,12 @@ read_data <- function(df) {
   df <- read_csv(full_path)
   return(df)
 }
-
 ```
 
 ## Visualization
 
-```{r capmetro_import, eval=FALSE}
-# he hasn't uploaded data yet
+```{r capmetro_import}
+
 capmetro <- read_data("capmetro_UT.csv") %>%
     # recode categorical vars
     mutate(day_of_week = factor(day_of_week,
@@ -53,11 +55,59 @@ capmetro <- read_data("capmetro_UT.csv") %>%
                                            "Fri","Sat","Sun")),
            month = factor(month, levels=c("Sep", "Oct","Nov")))
 
-#capmetro %>% colnames()
+skimr::skim(capmetro)
+```
+```{r}
+p1 <- 
+  capmetro %>%
+    group_by(hour_of_day, day_of_week, month) %>%
+    mutate(avg_boarding = mean(boarding)) %>%
+    ungroup() %>%
+    ggplot() +
+    geom_line(aes(x = hour_of_day, y = avg_boarding, color = month)) +
+    scale_x_continuous(expand = c(0,0), limits = c(0, 24), 
+                       breaks = seq(10, 20, 5)) +
+    scale_y_continuous(expand = c(0,0), limits = c(0, 160)) +
+    scale_color_ft("Month") +
+    facet_wrap(. ~ day_of_week, scales = "free") + 
+    labs(x = "Hour of day", y = "Average boarding",
+         title = "Average bus ridership around UT",
+         subtitle = "Tracked by optical scanner",
+         caption = "Source: Capital Metro") + 
+    theme_ipsum(grid = "XY", axis = "xy") 
+
+flush_ticks(p1)
 ```
 
+ADD DESCRIPTION
+
+```{r}
+p2 <-
+  capmetro %>%
+    group_by(timestamp, hour_of_day) %>%
+    mutate(avg_boarding = mean(boarding)) %>%
+    ggplot() +
+    geom_point(aes(x = temperature, y = avg_boarding, color = weekend)) +
+    scale_x_continuous(expand = c(0,0), limits = c(30, 100), 
+                       breaks = seq(40, 100, 20)) +
+    scale_y_continuous(expand = c(0,0), limits = c(0, 300)) +
+    scale_color_ft() +
+    facet_wrap(. ~ hour_of_day, scales = "free") +  
+    labs(x = "Temperature", y = "Boarding",
+         title = "Average bus ridership around UT by temperature",
+         subtitle = "Faceted by hour of day",
+         caption = "Source: Capital Metro") + 
+    theme_ipsum(grid = "XY", axis = "xy") +
+    theme(legend.title = element_blank()) 
+
+flush_ticks(p2)
+```
+
+ADD DESCRIPTION
 
 ## Saratoga House Prices
+
+RMSE to beat: 66257.83.
 
 ```{r saratoga_import, cache=TRUE}
 saratoga_houses <- mosaicData::SaratogaHouses
@@ -274,7 +324,7 @@ knn_results %>%
 
 ## Classification and retrospective sampling
 
-```{r}
+```{r credit_import}
 german_credit <- 
   read_data("german_credit.csv") %>% 
   select(-1) %>%
@@ -298,14 +348,16 @@ german_credit %>%
   group_by(history) %>%
   mutate(tot_default = sum(num_default),
          prob_default = (num_default / tot_default) * 100) %>%
-  filter(Default == 1) %>%
+  filter(Default == 0) %>%
   ggplot() +
   geom_col(aes(x = history, y = prob_default, 
              fill = history)) + 
   scale_y_continuous(labels = function(x) paste0(x, "%")) +
   scale_x_discrete(labels = c("Good", "Poor", "Terrible")) +
-  labs(x = "History", y = "Probability of Default") +
-  theme_ipsum(grid="Y") + 
+  scale_fill_ft() +
+  labs(x = "History", y = "Probability of Default",
+       title = "Probability of credit default given credit history") +
+  theme_ipsum(grid = "Y") + 
   theme(legend.title = element_blank(),
         legend.position = "None")
 ```
@@ -353,7 +405,6 @@ log_rec <-
   recipe(Default ~ ., data = german_train) %>%
   # remove vars not in varlist
   step_rm(setdiff(colnames(german_credit), varlist)) %>%
-  #step_num2factor(default) %>%
   step_dummy(all_nominal(), -all_outcomes()) %>% 
   step_zv(all_predictors()) %>% 
   step_normalize(all_predictors())
@@ -378,7 +429,7 @@ log_grid %>% top_n(5)
 ```
 
 
-```{r, cache=TRUE}
+```{r}
 set.seed(350)
 
 log_rs <- 
@@ -403,12 +454,12 @@ log_rs %>%
   scale_x_log10(labels = scales::label_number()) + 
   theme_ipsum()
 ```
-Here we see that model performance is typically better at smaller values. This indiates that the majority of predictors are important in this model. 
+Here we see that model performance is typically better at smaller values. This indicates that the majority of predictors are important in this model. 
 
 ```{r}
 top_models <-
   log_rs %>% 
-  show_best("roc_auc", n = 15) %>% 
+  show_best("roc_auc", n = 20) %>% 
   arrange(penalty) 
 
 top_models 
@@ -436,8 +487,6 @@ log_auc <-
 autoplot(log_auc)
 ```
 
-This model is fine, but not that good.
-
 
 ```{r}
 final_log_wf <- 
@@ -464,9 +513,19 @@ log_results %>%
   autoplot()
 ```
 
+Next, we can look at a confusion matrix.
 
+```{r}
+cm <- log_results %>%
+  conf_mat(Default, .pred_class)
+
+cm
+```
+
+This model is accurate 74.4 percent of the time. That's not ideal. The null model of assuming no one will default would be correct 70 percent of the time (given the 700/300 split).
 
 ## Children and Hotel Reservations
+
 
 
 ## Session Information 
