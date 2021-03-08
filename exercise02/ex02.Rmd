@@ -17,6 +17,7 @@ library(tidyverse)
 library(tidymodels)
 library(tidyquant)
 library(skimr)
+library(ggthemes)
 library(kknn)
 library(glmnet)
 library(lubridate)
@@ -112,7 +113,7 @@ RMSE to beat: 66257.83.
 ```{r saratoga_import, cache=TRUE}
 saratoga_houses <- mosaicData::SaratogaHouses
 
-skimr::skim(saratoga_houses)
+#skimr::skim(saratoga_houses)
 
 # Histogtam of saratoga house prices
 saratoga_houses %>%
@@ -145,7 +146,6 @@ Let's use cross-validation to split the training set into k-folds.
 ```{r, cache=TRUE}
 # 3 fold cross validation (for speed)
 saratoga_vfold <- vfold_cv(saratoga_train, v = 3, repeats = 1, strata = "price")
-saratoga_vfold 
 ```
 
 We are interested in two different models, a linear regression model and a knn regression model. We start by creating the model specifications.
@@ -174,7 +174,13 @@ Next we put together a tidymodels `workflow()`:
 # feature engineering
 saratoga_wf <-
   workflow() %>%
-  add_formula(price ~ .)
+  add_formula(price ~ .) %>%
+  # mean impute numeric variables
+  step_meanimpute(all_numeric()) %>%
+  # rescale all numeric variables to lie between 0 and 1
+  step_range(all_numeric(), min = 0, max = 1) %>%
+  # remove predictor variables that are almost the same for every entry
+  step_nzv(all_predictors()) 
 
 saratoga_wf
 ```
@@ -190,8 +196,6 @@ lm_rs <-
     resamples = saratoga_vfold,
     control = control_resamples(save_pred = TRUE)
   )
-
-lm_rs
 ```
 
 Second, we can fit the KNN model. This one requires a bit more work.
@@ -200,7 +204,13 @@ Second, we can fit the KNN model. This one requires a bit more work.
 set.seed(350)
 # feature engineering
 knn_rec <- 
-  recipe(price ~ ., data = saratoga_train)
+  recipe(price ~ ., data = saratoga_train) %>%
+  # mean impute numeric variables
+  step_meanimpute(all_numeric()) %>%
+  # rescale all numeric variables to lie between 0 and 1
+  step_range(all_numeric(), min = 0, max = 1) %>%
+  # remove predictor variables that are almost the same for every entry
+  step_nzv(all_predictors()) 
 
 # workflow
 knn_wf <- 
@@ -258,7 +268,7 @@ lm_results <-
 lm_results
 ```
 
-For the linear model, we can look at coefficient estimates.
+Here we see the `rmse` for the linear model. It is quite large but noticeably better than the provided script in class. Then, for the linear model, we can look at coefficient estimates.
 
 ```{r, cache=TRUE}
 lm_fit$.workflow[[1]] %>% 
@@ -283,7 +293,7 @@ lm_results %>%
   theme_ipsum()
 ```
 
-Next, we evaluate the KNN model.
+Next, we evaluate the KNN model on out of sample data.
 
 ```{r, cache=TRUE}
 final_knn_wf <- 
@@ -304,8 +314,7 @@ knn_results <-
 # view results
 knn_results
 ```
-
-And we can plot the results.
+Above we see the model `rmse`, which is absurdly low. And we can plot the results.
 
 ```{r, cache=TRUE}
 knn_results %>%
@@ -330,8 +339,6 @@ german_credit <-
   select(-1) %>%
   # set outcome as factor 
   mutate(Default = as.factor(Default))
-
-skimr::skim(german_credit)
 ```
 
 ### Build logistic regression model
@@ -522,11 +529,309 @@ cm <- log_results %>%
 cm
 ```
 
-This model is accurate 74.4 percent of the time. That's not ideal. The null model of assuming no one will default would be correct 70 percent of the time (given the 700/300 split).
+This model is accurate 74.4 percent of the time. That's not ideal. The null model of assuming no one will default would be correct 70 percent of the time (given the 700/300 split). These data are likely not ideal for predicting, as previous credit history carries so much weight. I would recommend the bank get a more balance sample. See the following:
+
+```{r}
+german_credit %>% 
+  group_by(history) %>% 
+  tally() %>%
+  kbl()
+```
+
+The skew is pretty strong and the sampling is not balanced.
 
 ## Children and Hotel Reservations
 
+```{r hotels_dev_import}
+hotels_dev <- 
+  read_data("hotels_dev.csv") %>%
+  mutate(children = as.factor(children))
+```
 
+First, we look at some proportions. How many stays included children?
+
+```{r}
+hotels_dev %>%
+  count(children) %>%
+  mutate(prop = round( n/sum(n), 3)) %>%
+  mutate(children = if_else(children == 1, "children", "none")) %>%
+  kbl("pipe")
+```
+
+In this sample, children only make up about 8% of the sample. This can be problematic. 
+
+```{r}
+hotel_splits <- initial_split(hotels_dev, strata = children)
+
+hotel_train <- training(hotel_splits)
+hotel_test <- testing(hotel_splits)
+
+train_val_set <- validation_split(hotel_train, strata = children, prop = 0.8)
+```
+
+We can also look at the proportions in our train/test split.
+
+```{r}
+# train
+hotel_train %>%
+  count(children) %>%
+  mutate(prop = round( n/sum(n), 3)) %>%
+  mutate(children = if_else(children == 1, "children", "none")) %>%
+  kbl("pipe")
+
+# test
+hotel_test %>%
+  count(children) %>%
+  mutate(prop = round( n/sum(n), 3)) %>%
+  mutate(children = if_else(children == 1, "children", "none")) %>%
+  kbl("pipe")
+```
+
+Here we see the splits are similar in proportion for children/no-children.
+
+### Baseline models
+
+Our first model will be a penalized logistic regression model since our variable of interest is categorical.
+
+```{r}
+log_mod_base1 <- 
+  logistic_reg(penalty = tune(), mixture = 1) %>%
+  set_engine("glmnet")
+```
+
+For the first model, we will only use the following variables: `market_segment`, `adults`,
+`customer_type`, and `is_repeated_guest`. We start with feature engineering.
+
+```{r}
+# Preprocess recipe
+log_mod_base1_recipe <-
+  recipe(children ~ market_segment + adults + customer_type + is_repeated_guest,
+         data = hotel_train) %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  # remove vars with a single value
+  step_zv(all_predictors()) %>%
+  step_normalize(all_predictors())
+
+# Preprocess
+log_mod_base1_wrkflow <-
+  workflow() %>%
+  add_model(log_mod_base1) %>%
+  add_recipe(log_mod_base1_recipe)
+```
+
+Now, we have to tune only one hyperparameter here.
+
+```{r}
+lr_reg_grid <- tibble(penalty = 10^seq(-4, -1, length.out = 30))
+
+log_base1_res <- 
+  log_mod_base1_wrkflow %>%
+  tune_grid(train_val_set,
+            grid = lr_reg_grid,
+            control = control_grid(save_pred = T),
+            metrics = metric_set(roc_auc))
+```
+
+```{r}
+# select the best model
+log_base1_res %>% 
+  select_best()
+
+best_mod_base1 <- 
+  log_base1_res %>%
+  collect_metrics() %>%
+  slice(8)
+```
+
+```{r}
+# roc curve
+log_base1_res %>%
+  collect_predictions(parameters = best_mod_base1) %>%
+  roc_curve(children, .pred_0) %>% 
+  mutate(model = "Logistic Regression") %>%
+  autoplot() 
+```
+
+lol yikes! Let's show a confusion matrix:
+
+```{r}
+param_final <- 
+  log_base1_res %>%
+  select_best(metric = "roc_auc")
+
+log_mod_base1_wrkflow <-
+  log_mod_base1_wrkflow %>% 
+  finalize_workflow(param_final)
+
+base1_fit <- 
+  log_mod_base1_wrkflow %>%
+  last_fit(hotel_splits)
+
+base1_pred <-
+  base1_fit %>%
+  collect_predictions()
+
+base1_pred %>% 
+  conf_mat(truth = children, estimate = .pred_class)
+```
+
+Okay now let's do the same thing but with all of the other predictors (except `arrival_date`).
+
+Let's start with the feature engineering.
+
+```{r}
+# Preprocess recipe
+holidays <- c("AllSouls", "AshWednesday", "ChristmasEve", "Easter", 
+              "ChristmasDay", "GoodFriday", "NewYearsDay", "PalmSunday")
+
+log_mod_base2_recipe <-
+  recipe(children ~ .,
+         data = hotel_train) %>%
+  #step_downsample(children) %>%
+  step_date(arrival_date) %>% 
+  step_holiday(arrival_date, holidays = holidays) %>% 
+  step_rm(arrival_date) %>% 
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  # remove vars with a single value
+  step_zv(all_predictors()) %>%
+  step_normalize(all_predictors())
+
+# Preprocess
+log_mod_base2_wrkflow <-
+  workflow() %>%
+  add_model(log_mod_base1) %>%
+  add_recipe(log_mod_base2_recipe)
+```
+
+Again, we have to tune only one hyperparameter here.
+
+```{r}
+log_base2_res <- 
+  log_mod_base2_wrkflow %>%
+  tune_grid(train_val_set,
+            grid = lr_reg_grid,
+            control = control_grid(save_pred = T),
+            metrics = metric_set(roc_auc))
+```
+
+Then we can plot the penalty values against the area under the ROC curve.
+
+```{r}
+log_base2_res %>% 
+  collect_metrics() %>% 
+  ggplot(aes(x = penalty, y = mean)) + 
+  geom_point() + 
+  geom_line() + 
+  ylab("Area under the ROC Curve") +
+  scale_x_log10(labels = scales::label_number()) + 
+  theme_clean()
+```
+
+```{r}
+# select the best model
+log_base2_res %>% 
+  select_best()
+
+best_mod_base2 <- 
+  log_base1_res %>%
+  collect_metrics() %>%
+  slice(12)
+```
+
+```{r}
+# roc curve
+log_base2_res %>%
+  collect_predictions(parameters = best_mod_base2) %>%
+  roc_curve(children, .pred_0) %>% 
+  mutate(model = "Logistic Regression") %>%
+  autoplot() 
+```
+
+This is not fabulous but it is quite a bit better than the first model. We can then look at confusion matrices.
+
+```{r}
+param_final <- 
+  log_base2_res %>%
+  select_best(metric = "roc_auc")
+
+log_mod_base2_wrkflow <-
+  log_mod_base2_wrkflow %>% 
+  finalize_workflow(param_final)
+
+base2_fit <- 
+  log_mod_base2_wrkflow %>%
+  last_fit(hotel_splits)
+
+base2_pred <-
+  base2_fit %>%
+  collect_predictions()
+
+base2_pred %>% 
+  conf_mat(truth = children, estimate = .pred_class)
+```
+
+!TODO build linear model
+
+
+```{r hotels_val_import}
+hotels_val <- read_data("hotels_val.csv") %>%
+  mutate(children = as.factor(children))
+
+# create v-folds
+hotel_folds <- vfold_cv(hotels_val, v = 20)
+```
+
+Then we can fit the v-folds:
+
+```{r}
+hotel_fold_fit <- 
+  log_mod_base2_wrkflow %>%
+  #add_model(log_mod_base1) %>%
+  fit_resamples(
+    resamples = hotel_folds,
+    control = control_resamples(save_pred = TRUE)
+  )
+```
+
+Next, we sum up the predicted probabilities for all the bookings in the fold. This gives an estimate of the expected number of bookings with children for that fold.
+
+```{r}
+pred_sums <- list()
+
+for (i in 1:20) {
+  pred_sums <-
+    hotel_fold_fit$.predictions[[i]] %>%
+    summarize(sum_pred = sum(as.numeric(.pred_class))) %>%
+    pull(sum_pred) %>% 
+    append(pred_sums)
+}
+
+# print col sums
+as.tibble(pred_sums, .name_repair = "unique") %>% 
+  kable(col.names = make.unique(c(rep("v", 21)), sep = "")[2:21],
+      caption = "Sum of predicted")
+```
+
+Now we can compare that with the actual number.
+
+```{r}
+actual_sums <- list()
+
+for (i in 1:20) {
+  actual_sums <-
+    hotel_fold_fit$.predictions[[i]] %>%
+    summarize(sum_actual = sum(as.numeric(children))) %>%
+    pull(sum_actual) %>% 
+    append(actual_sums)
+}
+
+# print col sums
+as.tibble(actual_sums, .name_repair = "unique") %>% 
+  kable(col.names = make.unique(c(rep("v", 21)), sep = "")[2:21],
+      caption = "Sum of actual")
+```
+
+TODO just make these one table of predicted v actual by fold.
 
 ## Session Information 
 
