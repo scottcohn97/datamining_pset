@@ -1,0 +1,420 @@
+---
+title: "Exercise 03"
+author: "Scott Cohn"
+date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
+output: github_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      cache = TRUE,
+                      warning = FALSE, 
+                      message = FALSE)
+
+options(scipen = 999) 
+
+library(tidyverse)
+library(ggthemes)
+library(tictoc)
+library(kableExtra)
+library(modelsummary)
+library(skimr)
+library(estimatr)
+library(tidymodels)
+library(patchwork)
+library(ggmap)
+library(maps)
+library(mapdata)
+```
+
+```{r}
+# funcs
+read_data <- function(df) {
+  #' read data from git url
+  #' INPUT: data set name
+  #' OUTPUT: dataframe
+  full_path <- paste("https://raw.githubusercontent.com/jgscott/ECO395M/master/data/", 
+                     df, sep = "")
+  df <- read_csv(full_path)
+  return(df)
+}
+```
+
+
+## What Causes What?
+
+
+
+
+
+
+## Predictive model building: California housing
+
+```{r ca_housing_import}
+housing <- 
+  read_data("CAhousing.csv") 
+
+skim(housing)
+```
+
+Thankfully Professor Scott made this easier for us and eliminated all of the missing values problems. Nice work there.
+
+Plots:
+
+[x] median vs long/lat, with color scale
+[ ] pred vs long/lat
+[ ] err/resid vs long/lat
+
+```{r cali_map}
+# cali <- ggmap(ggmap::get_stamenmap(location ='California', zoom = 6))
+# ggmap(cali)
+
+states <- map_data("state")
+ca_df <- subset(states, region == "california")
+
+ca_base <- 
+  ggplot() + 
+  coord_fixed(1.3) + 
+  geom_polygon(data = ca_df, 
+               aes(x = long, y = lat, group = group),
+               color = "black", fill = "white")  + 
+  geom_polygon(data = ca_county, 
+               aes(x = long, y = lat, group = group), 
+               fill = NA, color = "gray") +
+  geom_polygon(data = ca_df,
+               aes(x = long, y = lat, group = group), 
+               color = "black", fill = NA)
+
+ca_base + 
+  geom_point(data = housing, 
+    aes(x = longitude, y = latitude, 
+        color = medianHouseValue, size = population), 
+    alpha = 0.4) +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme_map() +
+  scale_color_distiller(palette = "Paired", labels = comma) +
+  labs(title = "California Housing",
+       x = "Longitude", y = "Latitude",
+       color = "Median House Value (in $USD)", 
+       size = "Population")
+```
+
+### Cleaning
+
+```{r house_clean, eval=FALSE, include=FALSE}
+# DO NOT RUN
+range_standardize <- function(x){
+  #' standardize to 0-1
+  (x - min(x)) / (max(x) - min(x))
+}
+
+housing <-
+  housing %>%
+  # standardize rooms
+  mutate(
+    # to these columns... 
+    across(c(totalBedrooms, totalRooms, population, housingMedianAge, medianIncome), 
+           # ...apply this function
+           range_standardize)
+    )
+```
+
+The data is pretty clean, so there isn't much feature engineering to do.
+
+Here we create the train/test split.
+
+```{r}
+set.seed(395)
+
+# Create a split object
+housing_split <- initial_split(housing, prop = 0.75, strata = medianHouseValue)
+
+# Build training data set
+housing_train <- housing_split %>% training()
+
+# Build testing data set
+housing_test <- housing_split %>% testing()
+
+# vfold
+housing_vfold <- vfold_cv(housing_train, v = 10, strata = medianHouseValue)
+```
+
+First, we can fit a basic linear model as a baseline. I do this as I've done in previous problem sets using the `tidymodels` pipeline. 
+
+```{r}
+set.seed(395)
+
+# specify a linear model
+lm_model <- 
+  linear_reg() %>% 
+  set_engine('lm') %>% 
+  set_mode('regression')
+
+# define a recipe - FEATURE ENG
+lm_recipe <- 
+  # fit on all variables
+  recipe(medianHouseValue ~ ., data = housing_train) %>%
+  # log price
+  step_log(medianHouseValue) %>%
+  # standardize
+  step_range(totalBedrooms, totalRooms, population, housingMedianAge, medianIncome) %>%
+  # specify tuning hyperparameters
+  step_ns(longitude, deg_free = tune("long df")) %>% 
+  step_ns(latitude,  deg_free = tune("lat df"))
+
+# grid to tun long/lat
+grid_vals <- seq(2, 22, by = 2)
+# A regular grid:
+spline_grid <- expand.grid(`long df` = grid_vals, `lat df` = grid_vals)
+
+# which hyper param to tune
+housing_param <- 
+  lm_recipe %>% 
+  parameters() %>% 
+  update(
+    `long df` = spline_degree(), 
+    `lat df` = spline_degree()
+  )
+
+housing_param
+
+# create a workflow
+lm_workflow <- 
+  workflow() %>% 
+  # specify engine
+  add_model(lm_model) %>% 
+  # specify recipe
+  add_recipe(lm_recipe)
+
+tic()
+lm_res <- 
+  lm_workflow %>%
+  tune_grid(resamples = housing_vfold, grid = spline_grid)
+toc()
+
+lm_est <- collect_metrics(lm_res)
+
+lm_rmse_vals <- 
+  lm_est %>% 
+  dplyr::filter(.metric == "rmse") %>% 
+  arrange(mean)
+
+lm_final <-
+  lm_rmse_vals %>%
+  filter(.metric == "rmse") %>%
+  filter(mean == min(mean))
+
+
+lm_final_workflow <- 
+  lm_workflow %>% 
+  finalize_workflow(lm_final)
+
+# fit the model
+lm_fit <- 
+  # use the workflow with the best model ...
+  lm_final_workflow %>% 
+  # ... to fit the test set
+  last_fit(split = housing_split)
+
+# Obtain performance metrics on test data
+lm_fit %>% collect_metrics()
+```
+
+Let's plot spline functions. Looking at these plots, the smaller degrees of freedom (red) are clearly under-fitting. Visually, the more complex splines (blue) might indicate that there is overfitting but this would result in poor RMSE values when computed on the hold-out data.
+
+```{r}
+housing_train %>% 
+  dplyr::select(medianHouseValue, longitude, latitude) %>% 
+  tidyr::pivot_longer(cols = c(longitude, latitude), 
+                      names_to = "predictor", values_to = "value") %>% 
+  ggplot(aes(x = value, medianHouseValue)) + 
+  geom_point(alpha = .2) + 
+  geom_smooth(se = FALSE, method = lm, formula = y ~ splines::ns(x, df = 3),  col = "tomato") +
+  geom_smooth(se = FALSE, method = lm, formula = y ~ splines::ns(x, df = 16)) +
+  scale_y_log10() +
+  theme_clean() +
+  facet_wrap(~ predictor, scales = "free_x")
+```
+
+Let's save predictions on the out-of-sample test set.
+
+```{r}
+# Obtain test set predictions data frame
+lm_results <- 
+  lm_fit %>% 
+  # save pred results
+  collect_predictions()
+```
+
+Visually, how did we do?
+
+```{r}
+# plot pred v actual
+lm_results %>%
+  ggplot(aes(x = .pred, y = medianHouseValue)) +
+  geom_point(color = '#006EA1', alpha = 0.25)  +
+  geom_abline(intercept = 0, slope = 1, color = 'tomato') +
+  labs(title = 'Linear Regression Results - Test Set',
+       x = 'Predicted Price',
+       y = 'Actual Price') + 
+  theme_clean()
+```
+
+This looks okay. How does this compare to a KNN-regression? A KNN-regression might give better performance with respect to the nonlinearities in our features.
+
+```{r}
+set.seed(395)
+
+# specify a knn model
+knn_model <- 
+  # specify hyperparameters
+  nearest_neighbor(neighbors = tune(), weight_func = tune()) %>% 
+  set_engine('kknn') %>% 
+  set_mode('regression') %>%
+  translate()
+
+# define a recipe
+knn_recipe <- 
+  # fit on all variables
+  recipe(medianHouseValue ~ ., data = housing_train) %>%
+  # log price
+  step_log(medianHouseValue) %>%
+  # standardize
+  step_range(totalBedrooms, totalRooms, population, housingMedianAge, medianIncome) %>%
+  # specify tuning hyperparameters
+  step_ns(longitude, deg_free = tune("long df")) %>% 
+  step_ns(latitude,  deg_free = tune("lat df"))
+
+# create a workflow
+knn_workflow <- 
+  workflow() %>% 
+  # specify engine
+  add_model(knn_model) %>% 
+  # specify recipe
+  add_recipe(knn_recipe)
+
+knn_param <- 
+  knn_workflow %>% 
+  # how to tune hyperparams
+  parameters() %>% 
+    update(
+    `long df` = spline_degree(c(2, 18)), 
+    `lat df` = spline_degree(c(2, 18)),
+    neighbors = neighbors(c(3, 50)),
+    weight_func = weight_func(values = c("rectangular", "inv", "gaussian", "triangular"))
+  )
+
+ctrl <- control_bayes(verbose = TRUE)
+
+tic()
+knn_search <- 
+  tune_bayes(knn_workflow, resamples = housing_vfold, initial = 5, iter = 20,
+                         param_info = knn_param, control = ctrl)
+toc()
+
+knn_final <-
+  knn_search %>%
+  collect_metrics() %>% 
+  dplyr::filter(.metric == "rmse") %>% 
+  filter(mean == min(mean))
+
+
+knn_final_workflow <- 
+  knn_workflow %>% 
+  finalize_workflow(knn_final)
+
+# fit the model
+knn_fit <- 
+  # use the workflow with the best model ...
+  knn_final_workflow %>% 
+  # ... to fit the test set
+  last_fit(split = housing_split)
+
+# Obtain performance metrics on test data
+knn_fit %>% collect_metrics()
+```
+
+We were able to get some gains over the linear model. Let's save predictions on the out-of-sample test set.
+
+```{r}
+# Obtain test set predictions data frame
+knn_results <- 
+  knn_fit %>% 
+  # save pred results
+  collect_predictions()
+```
+
+Visually, how did we do?
+
+```{r}
+# plot pred v actual
+knn_results %>%
+  ggplot(aes(x = .pred, y = medianHouseValue)) +
+  geom_point(color = '#006EA1', alpha = 0.25)  +
+  geom_abline(intercept = 0, slope = 1, color = 'tomato') +
+  labs(title = 'KNN Regression Results - Test Set',
+       x = 'Predicted Price',
+       y = 'Actual Price') + 
+  theme_clean() 
+```
+
+From the RMSE alone, this model is a bit better. To improve, we may have to do some more feature engineering or use a different modeling framework altogether.
+
+Let's look at the predicted values on a map:
+
+```{r}
+# join predictions with test set
+
+# then use this map
+
+ca_base + 
+  geom_point(data = housing, 
+    aes(x = longitude, y = latitude, 
+        color = medianHouseValue, size = population), 
+    alpha = 0.4) +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  theme_map() +
+  scale_color_distiller(palette = "Paired", labels = comma) +
+  labs(title = "California Housing",
+       x = "Longitude", y = "Latitude",
+       color = "Median House Value (in $USD)", 
+       size = "Population")
+```
+
+
+
+
+Look at this: 
+  - https://www.kaggle.com/subashdump/california-housing-price-prediction
+  - https://jhimlib.github.io/CaliforniaHousingPricePrediction/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+## Session Information 
+
+```{r sysinfo}
+sessionInfo()
+```
+
+
