@@ -103,24 +103,6 @@ ca_base +
 
 ### Cleaning
 
-```{r house_clean, eval=FALSE, include=FALSE}
-# DO NOT RUN
-range_standardize <- function(x){
-  #' standardize to 0-1
-  (x - min(x)) / (max(x) - min(x))
-}
-
-housing <-
-  housing %>%
-  # standardize rooms
-  mutate(
-    # to these columns... 
-    across(c(totalBedrooms, totalRooms, population, housingMedianAge, medianIncome), 
-           # ...apply this function
-           range_standardize)
-    )
-```
-
 The data is pretty clean, so there isn't much feature engineering to do.
 
 Here we create the train/test split.
@@ -362,43 +344,27 @@ knn_results %>%
 
 From the RMSE alone, this model is a bit better. To improve, we may have to do some more feature engineering or use a different modeling framework altogether.
 
-Let's look at the predicted values on a map:
+Since this is the better model of the two, let's look at the predicted (log) residual as a deviation away from the true value:
 
 ```{r}
-# join predictions with test set
 
 # then use this map
+knn_results <- 
+  knn_results %>%
+    bind_cols(housing_test) %>% 
+    rename(medianHouseValue_log = `medianHouseValue...4`,
+           medianHouseValue = `medianHouseValue...14`) 
 
-ca_base + 
-  geom_point(data = housing, 
-    aes(x = longitude, y = latitude, 
-        color = medianHouseValue, size = population), 
-    alpha = 0.4) +
-  theme(plot.title = element_text(hjust = 0.5)) +
-  theme_map() +
-  scale_color_distiller(palette = "Paired", labels = comma) +
-  labs(title = "California Housing",
-       x = "Longitude", y = "Latitude",
-       color = "Median House Value (in $USD)", 
-       size = "Population")
+knn_results %>% 
+  arrange(medianHouseValue_log) %>%
+  mutate(id = row_number()) %>%
+  ggplot(aes(x = id, y = medianHouseValue_log)) + 
+  geom_segment(aes(xend = id, yend = .pred), alpha = .2) +
+  geom_point(aes(y = .pred), shape = 1) + 
+  geom_point(color = "tomato", shape = 1, alpha = 0.5) +
+  labs(x = "", y = "Logged median house value") + 
+  theme_clean()
 ```
-
-
-
-
-Look at this: 
-  - https://www.kaggle.com/subashdump/california-housing-price-prediction
-  - https://jhimlib.github.io/CaliforniaHousingPricePrediction/
-
-
-
-
-
-
-
-
-
-
 
 
 
