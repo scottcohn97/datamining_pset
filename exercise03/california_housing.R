@@ -1,19 +1,4 @@
----
-title: "Exercise 03"
-author: "Scott Cohn"
-date: "Last compiled on `r format(Sys.time(), '%d %B, %Y')`"
-output: github_document
-editor_options: 
-  chunk_output_type: console
----
-
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, 
-                      cache = TRUE,
-                      warning = FALSE, 
-                      message = FALSE)
-
-options(scipen = 999) 
+# California housing
 
 library(tidyverse)
 library(ggthemes)
@@ -28,9 +13,9 @@ library(patchwork)
 library(ggmap)
 library(maps)
 library(mapdata)
-```
 
-```{r}
+set.seed(395)
+
 # funcs
 read_data <- function(df) {
   #' read data from git url
@@ -41,80 +26,19 @@ read_data <- function(df) {
   df <- read_csv(full_path)
   return(df)
 }
-```
 
-
-## What Causes What?
-
-### Q1
-
-> *Why can’t I just get data from a few different cities and run the regression of “Crime” on “Police” to understand how more cops in the streets affect crime? (“Crime” refers to some measure of crime rate and “Police” measures the number of cops in a city.)*
-
-
-### Q2
-
->*How were the researchers from UPenn able to isolate this effect? Briefly describe their approach and discuss their result in the “Table 2” below, from the researchers' paper.*
-
-|                       | (1)     | (2)       |
-|-----------------------|---------|-----------|
-| High Alert            | -7.316* | -6.046*   |
-|                       | (2.877) | (2.537)   |
-| Log(midday ridership) |         | 17.341*** |
-|                       |         | (5.309)   |
-| R-sq                  | 0.14    | 0.17      |
-
-
-### Q3 
-
-> *Why did they have to control for Metro ridership? What was that trying to capture?*
-
-### Q4
-
->*Below I am showing you "Table 4" from the researchers' paper. Just focus on the first column of the table. Can you describe the model being estimated here? What is the conclusion?*
-
-|                              | Coefficient |
-|                              | (Robust)    |
-|------------------------------|-------------|
-| High Alert x District 1      | -2.621**    |
-|                              | (.044)      |
-| High Alert x Other Districts | -.571       |
-|                              | (.455)      |
-| Log(midday ridership)        | 2.477*      |
-|                              | (.364)      |
-| Constant                     | -11.058**   |
-|                              | (4.211)     |
-
-
-## Predictive model building: Green Certification
-
-```{r ca_housing_import}
-green_build <- 
-  read_data("greenbuildings.csv") 
-
-skim(housing)
-```
-
-
-## Predictive model building: California housing
-
-```{r ca_housing_import}
 housing <- 
-  read_data("CAhousing.csv") 
+  read_data("CAhousing.csv") %>%
+  janitor::clean_names()
 
 skim(housing)
-```
 
-Thankfully Professor Scott made this easier for us and eliminated all of the missing values problems. Nice work there.
 
-Plots:
 
-[x] median vs long/lat, with color scale
-[ ] pred vs long/lat
-[ ] err/resid vs long/lat
-
-```{r cali_map}
 # cali <- ggmap(ggmap::get_stamenmap(location ='California', zoom = 6))
 # ggmap(cali)
+
+# raw map ----
 
 states <- map_data("state")
 ca_df <- subset(states, region == "california")
@@ -134,9 +58,9 @@ ca_base <-
 
 ca_base + 
   geom_point(data = housing, 
-    aes(x = longitude, y = latitude, 
-        color = medianHouseValue, size = population), 
-    alpha = 0.4) +
+             aes(x = longitude, y = latitude, 
+                 color = medianHouseValue, size = population), 
+             alpha = 0.4) +
   theme(plot.title = element_text(hjust = 0.5)) +
   theme_map() +
   scale_color_distiller(palette = "Paired", labels = comma) +
@@ -144,15 +68,10 @@ ca_base +
        x = "Longitude", y = "Latitude",
        color = "Median House Value (in $USD)", 
        size = "Population")
-```
 
-### Cleaning
 
-The data is pretty clean, so there isn't much feature engineering to do.
-
-Here we create the train/test split.
-
-```{r}
+# Cleaning and test/train ----
+  
 set.seed(395)
 
 # Create a split object
@@ -166,12 +85,9 @@ housing_test <- housing_split %>% testing()
 
 # vfold
 housing_vfold <- vfold_cv(housing_train, v = 10, strata = medianHouseValue)
-```
+ 
 
-First, we can fit a basic linear model as a baseline. I do this as I've done in previous problem sets using the `tidymodels` pipeline. 
-
-```{r}
-set.seed(395)
+# linear regression model ----
 
 # specify a linear model
 lm_model <- 
@@ -247,11 +163,9 @@ lm_fit <-
 
 # Obtain performance metrics on test data
 lm_fit %>% collect_metrics()
-```
+ 
 
-Let's plot spline functions. Looking at these plots, the smaller degrees of freedom (red) are clearly under-fitting. Visually, the more complex splines (blue) might indicate that there is overfitting but this would result in poor RMSE values when computed on the hold-out data.
-
-```{r}
+  
 housing_train %>% 
   dplyr::select(medianHouseValue, longitude, latitude) %>% 
   tidyr::pivot_longer(cols = c(longitude, latitude), 
@@ -263,21 +177,17 @@ housing_train %>%
   scale_y_log10() +
   theme_clean() +
   facet_wrap(~ predictor, scales = "free_x")
-```
+ 
 
-Let's save predictions on the out-of-sample test set.
-
-```{r}
+  
 # Obtain test set predictions data frame
 lm_results <- 
   lm_fit %>% 
   # save pred results
   collect_predictions()
-```
-
-Visually, how did we do?
-
-```{r}
+ 
+  
+    
 # plot pred v actual
 lm_results %>%
   ggplot(aes(x = .pred, y = medianHouseValue)) +
@@ -287,12 +197,13 @@ lm_results %>%
        x = 'Predicted Price',
        y = 'Actual Price') + 
   theme_clean()
-```
 
-This looks okay. How does this compare to a KNN-regression? A KNN-regression might give better performance with respect to the nonlinearities in our features.
 
-```{r}
-set.seed(395)
+
+
+
+ 
+# knn regression model ----
 
 # specify a knn model
 knn_model <- 
@@ -326,7 +237,7 @@ knn_param <-
   knn_workflow %>% 
   # how to tune hyperparams
   parameters() %>% 
-    update(
+  update(
     `long df` = spline_degree(c(2, 18)), 
     `lat df` = spline_degree(c(2, 18)),
     neighbors = neighbors(c(3, 50)),
@@ -338,7 +249,7 @@ ctrl <- control_bayes(verbose = TRUE)
 tic()
 knn_search <- 
   tune_bayes(knn_workflow, resamples = housing_vfold, initial = 5, iter = 20,
-                         param_info = knn_param, control = ctrl)
+             param_info = knn_param, control = ctrl)
 toc()
 
 knn_final <-
@@ -361,38 +272,24 @@ knn_fit <-
 
 # Obtain performance metrics on test data
 knn_fit %>% collect_metrics()
-```
 
-We were able to get some gains over the linear model. Let's save predictions on the out-of-sample test set.
-
-```{r}
 # Obtain test set predictions data frame
 knn_results <- 
   knn_fit %>% 
   # save pred results
   collect_predictions()
-```
+ 
 
-Visually, how did we do?
-
-```{r}
 # plot pred v actual
 knn_results %>%
   ggplot(aes(x = .pred, y = medianHouseValue)) +
   geom_point(color = '#006EA1', alpha = 0.25)  +
-  geom_abline(intercept = 0, slope = 1, color = 'tomato') +
+geom_abline(intercept = 0, slope = 1, color = 'tomato') +
   labs(title = 'KNN Regression Results - Test Set',
        x = 'Predicted Price',
        y = 'Actual Price') + 
   theme_clean() 
-```
-
-From the RMSE alone, this model is a bit better. To improve, we may have to do some more feature engineering or use a different modeling framework altogether.
-
-Since this is the better model of the two, let's look at the predicted (log) residual as a deviation away from the true value:
-
-```{r}
-
+ 
 # then use this map
 knn_results <- 
   knn_results %>%
@@ -409,23 +306,10 @@ knn_results %>%
   geom_point(color = "tomato", shape = 1, alpha = 0.5) +
   labs(x = "", y = "Logged median house value") + 
   theme_clean()
-```
+
+# other model ----
 
 
 
-
-
-
-
-
-
-
-
-
-## Session Information 
-
-```{r sysinfo}
+# session info -----
 sessionInfo()
-```
-
-
